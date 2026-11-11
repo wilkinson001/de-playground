@@ -71,3 +71,15 @@ matrix: env ## Probe every engine x table format and write docs/engine-format-ma
 .PHONY: stream-setup
 stream-setup: env ## Create Kafka topics (+ ClickHouse streaming tables); safe to re-run
 	$(RUN) uv run python -m de_playground.streaming setup
+
+FLINK_JOB := /opt/playground/src/de_playground/streaming/flink/job.py
+.PHONY: stream-job stream-status stream-stop
+stream-job: env ## (Re)submit the PyFlink streaming job (replaces a running one)
+	$(RUN) uv run python -m de_playground.streaming job-cancel
+	$(COMPOSE) $(STREAM_PROFILES) exec flink-jobmanager /opt/flink/bin/flink run -d -py $(FLINK_JOB)
+
+stream-status: env ## Show the Flink streaming job
+	$(RUN) uv run python -m de_playground.streaming job-status
+
+stream-stop: env ## Cancel the Flink streaming job
+	$(RUN) uv run python -m de_playground.streaming job-cancel

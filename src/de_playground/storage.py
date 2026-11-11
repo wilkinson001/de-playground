@@ -63,3 +63,22 @@ def delta_storage_options(settings: Settings) -> dict[str, str]:
         "AWS_ALLOW_HTTP": "true",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
     }
+
+
+def iceberg_catalog(settings: Settings):
+    """PyIceberg client for the Lakekeeper REST catalog (static S3 keys: no credential vending)."""
+    from pyiceberg.catalog import load_catalog
+
+    return load_catalog(
+        "lakekeeper",
+        type="rest",
+        uri=f"{settings.lakekeeper_url}/catalog",
+        warehouse=settings.iceberg_warehouse,
+        **{
+            "s3.endpoint": settings.s3_endpoint,
+            "s3.access-key-id": settings.s3_access_key,
+            "s3.secret-access-key": settings.s3_secret_key,
+            "s3.path-style-access": "true",
+            "s3.region": "us-east-1",
+        },
+    )

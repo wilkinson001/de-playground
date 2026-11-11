@@ -78,3 +78,24 @@ can**. The streaming tests verify Delta output with DuckDB for that reason.
 - Flink UI → Running Jobs, to see the streaming job's graph, watermarks per operator and checkpoint history.
 - Run SQL by hand: `docker compose exec flink-jobmanager ./bin/sql-client.sh gateway --endpoint flink-sql-gateway:8083`
   then `CREATE CATALOG lakehouse WITH (...)` (see `src/de_playground/streaming/flink/statements.py`).
+
+## Sample from the live feed
+
+`make stream-job`, about 2½ minutes after submitting against the live Wikimedia stream (the job
+first worked through the producer's backlog from the earliest offset):
+
+- bronze: **125,825** events in `flink_stream_bronze.recentchange` (Delta copy read with DuckDB)
+- gold: **3,563** rows in `flink_stream_gold.edits_per_minute`
+- the latest closed window (22:05 UTC), busiest wikis first:
+
+| wiki | edits | bot | human | new pages |
+|---|---:|---:|---:|---:|
+| commonswiki | 964 | 632 | 332 | 5 |
+| enwiki | 273 | 79 | 194 | 4 |
+| wikidatawiki | 206 | 8 | 198 | 3 |
+| elwiktionary | 117 | 117 | 0 | 0 |
+| arwiki | 77 | 75 | 2 | 1 |
+
+Query it yourself: `make shell`, then DuckDB's
+`delta_scan('s3://delta/flink_stream_gold/edits_per_minute')` (see `tests/integration/conftest.py`
+for the connection setup), or ClickHouse's `deltaLake(seaweedfs, url = 'http://seaweedfs:8333/delta/flink_stream_gold/edits_per_minute/')`.

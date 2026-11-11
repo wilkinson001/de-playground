@@ -186,22 +186,8 @@ class PythonAdapter:
     name = "python"
 
     def __init__(self, settings: Settings):
-        from pyiceberg.catalog import load_catalog
-
         self.storage_options = storage.delta_storage_options(settings)
-        self.catalog = load_catalog(
-            "lakekeeper",
-            type="rest",
-            uri=f"{settings.lakekeeper_url}/catalog",
-            warehouse=settings.iceberg_warehouse,
-            **{
-                "s3.endpoint": settings.s3_endpoint,
-                "s3.access-key-id": settings.s3_access_key,
-                "s3.secret-access-key": settings.s3_secret_key,
-                "s3.path-style-access": "true",
-                "s3.region": "us-east-1",
-            },
-        )
+        self.catalog = storage.iceberg_catalog(settings)
 
     def unsupported(self, fmt: str) -> str | None:
         if fmt == "ducklake":
