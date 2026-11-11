@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Connector jars for the Flink image. Only used by `mvn dependency:copy-dependencies` in the
+     Dockerfile: everything with runtime scope ends up in /opt/flink/lib. Flink itself is
+     provided by the base image, so org.apache.flink artifacts are never copied. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.de-playground</groupId>
+  <artifactId>flink-connectors</artifactId>
+  <version>1</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <iceberg.version>1.10.2</iceberg.version>
+    <delta.version>4.4.1</delta.version>
+    <kafka.connector.version>4.0.1-2.0</kafka.connector.version>
+    <!-- Hadoop as pulled in by delta-flink 4.4.1; its AWS SDK v2 bundle (2.29.52) also serves
+         Iceberg's S3FileIO, so iceberg-aws-bundle is deliberately NOT added (duplicate SDK). -->
+    <hadoop.version>3.4.2</hadoop.version>
+  </properties>
+
+  <!-- Delta's deps arrive with mixed Jackson versions (databind 2.13 next to core 2.17): pin one. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.17.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-sql-connector-kafka</artifactId>
+      <version>${kafka.connector.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-flink-runtime-2.0</artifactId>
+      <version>${iceberg.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-flink_2.0</artifactId>
+      <version>${delta.version}</version>
+    </dependency>
+    <!-- delta-flink's POM omits Delta Kernel's API module (ClassNotFoundException without it). -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-kernel-api</artifactId>
+      <version>${delta.version}</version>
+    </dependency>
+    <!-- Delta Kernel's Parquet writer uses unshaded Guava; hadoop-client-runtime only has a
+         relocated copy (ClassNotFoundException: com.google.common.io.CountingOutputStream). -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.3.1-jre</version>
+    </dependency>
+    <!-- delta-kernel-defaults brings hadoop-client-runtime (shaded third-party libs) but not the
+         API half; Iceberg's catalog also needs Hadoop's Configuration class. -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-api</artifactId>
+      <version>${hadoop.version}</version>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,44 @@
+# Flink 2.x configuration (replaces flink-conf.yaml). Mounted over the image's conf/config.yaml.
+jobmanager:
+  rpc:
+    address: flink-jobmanager
+  bind-host: 0.0.0.0
+  memory:
+    process:
+      size: 1280m
+taskmanager:
+  bind-host: 0.0.0.0
+  numberOfTaskSlots: 4
+  memory:
+    process:
+      size: 2560m
+rest:
+  address: flink-jobmanager
+  bind-address: 0.0.0.0
+parallelism:
+  default: 1
+execution:
+  checkpointing:
+    interval: 30s
+    dir: file:///opt/flink/checkpoints
+    savepoint-dir: file:///opt/flink/checkpoints/savepoints
+state:
+  backend:
+    type: hashmap
+python:
+  executable: python3
+  client:
+    executable: python3
+table:
+  exec:
+    source:
+      # Keyed Wikimedia traffic leaves some Kafka partitions quiet; without this an idle
+      # partition holds the watermark back and windows never close.
+      idle-timeout: 10s
+classloader:
+  # Hadoop's Configuration captures the thread's context classloader when created, and its codec
+  # pool caches one: a later job (e.g. Iceberg gzip-compressing metadata after a Delta write) then
+  # touches the previous job's closed user-code classloader. All connector jars live in lib/
+  # (parent classloader), so there is no real user code to leak; this is Flink's documented
+  # setting for Hadoop-backed connectors.
+  check-leaked-classloader: false

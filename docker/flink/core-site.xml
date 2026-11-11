@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- Hadoop S3A settings for the Delta connector (and anything else using Hadoop filesystems).
+     On HADOOP_CONF_DIR, which Flink's start scripts put on the classpath. Credentials are read
+     from the container environment (.env) via Hadoop's ${env.*} substitution - never baked in. -->
+<configuration>
+  <property><name>fs.s3a.endpoint</name><value>http://seaweedfs:8333</value></property>
+  <property><name>fs.s3a.endpoint.region</name><value>us-east-1</value></property>
+  <property><name>fs.s3a.path.style.access</name><value>true</value></property>
+  <property><name>fs.s3a.connection.ssl.enabled</name><value>false</value></property>
+  <property><name>fs.s3a.access.key</name><value>${env.S3_ACCESS_KEY}</value></property>
+  <property><name>fs.s3a.secret.key</name><value>${env.S3_SECRET_KEY}</value></property>
+  <!-- The Delta connector sets fs.s3a.path.style.access itself (AbstractKernelTable), overriding
+       the line above. S3A applies per-bucket options over the base keys when the filesystem is
+       created, so these win. SeaweedFS needs path style (no wildcard DNS for bucket hosts). -->
+  <property><name>fs.s3a.bucket.delta.path.style.access</name><value>true</value></property>
+  <property><name>fs.s3a.bucket.raw.path.style.access</name><value>true</value></property>
+  <property><name>fs.s3a.impl</name><value>org.apache.hadoop.fs.s3a.S3AFileSystem</value></property>
+</configuration>

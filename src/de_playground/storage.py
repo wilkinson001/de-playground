@@ -41,3 +41,25 @@ def object_exists(client: BaseClient, bucket: str, key: str) -> bool:
         if e.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
             return False
         raise
+
+
+def delete_prefix(client: BaseClient, bucket: str, prefix: str) -> int:
+    """Delete every object under a prefix (e.g. a path-based lake table). Returns the count."""
+    deleted = 0
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            client.delete_object(Bucket=bucket, Key=obj["Key"])
+            deleted += 1
+    return deleted
+
+
+def delta_storage_options(settings: Settings) -> dict[str, str]:
+    """Storage options for delta-rs (`deltalake`) against SeaweedFS."""
+    return {
+        "AWS_ENDPOINT_URL": settings.s3_endpoint,
+        "AWS_ACCESS_KEY_ID": settings.s3_access_key,
+        "AWS_SECRET_ACCESS_KEY": settings.s3_secret_key,
+        "AWS_REGION": "us-east-1",
+        "AWS_ALLOW_HTTP": "true",
+        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
+    }

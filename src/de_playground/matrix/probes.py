@@ -188,14 +188,7 @@ class PythonAdapter:
     def __init__(self, settings: Settings):
         from pyiceberg.catalog import load_catalog
 
-        self.storage_options = {
-            "AWS_ENDPOINT_URL": settings.s3_endpoint,
-            "AWS_ACCESS_KEY_ID": settings.s3_access_key,
-            "AWS_SECRET_ACCESS_KEY": settings.s3_secret_key,
-            "AWS_REGION": "us-east-1",
-            "AWS_ALLOW_HTTP": "true",
-            "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
-        }
+        self.storage_options = storage.delta_storage_options(settings)
         self.catalog = load_catalog(
             "lakekeeper",
             type="rest",
@@ -326,10 +319,7 @@ class ClickHouseAdapter:
 
     def create(self, fmt: str) -> None:
         # Path-based lake tables have no DROP that removes files: clear the previous run's table.
-        bucket = "iceberg" if fmt == "iceberg" else "delta"
-        for page in self.s3_client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="matrix/clickhouse_t/"):
-            for obj in page.get("Contents", []):
-                self.s3_client.delete_object(Bucket=bucket, Key=obj["Key"])
+        storage.delete_prefix(self.s3_client, "iceberg" if fmt == "iceberg" else "delta", "matrix/clickhouse_t/")
         self._create_over(fmt, "matrix/clickhouse_t")
 
     def count(self, fmt: str) -> int:

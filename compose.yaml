@@ -172,6 +172,58 @@ services:
       kafka: {condition: service_healthy}
     mem_limit: 512m
 
+  flink-jobmanager:
+    profiles: [streaming]
+    build:
+      context: docker/flink
+    image: de-playground/flink:2.0.1
+    <<: *secrets
+    command: ["jobmanager"]
+    ports: ["127.0.0.1:8081:8081"] # Flink web UI + REST
+    volumes: &flink-volumes
+      - ./src:/opt/playground/src:ro
+      - flinkcheckpoints:/opt/flink/checkpoints
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      kafka: {condition: service_healthy}
+      lakekeeper: {condition: service_healthy}
+      seaweedfs: {condition: service_healthy}
+    restart: unless-stopped
+    mem_limit: 1536m
+
+  flink-taskmanager:
+    profiles: [streaming]
+    image: de-playground/flink:2.0.1
+    <<: *secrets
+    command: ["taskmanager"]
+    volumes: *flink-volumes
+    depends_on:
+      flink-jobmanager: {condition: service_healthy}
+    restart: unless-stopped
+    mem_limit: 3g
+
+  flink-sql-gateway:
+    profiles: [streaming]
+    image: de-playground/flink:2.0.1
+    <<: *secrets
+    command: ["/opt/flink/bin/sql-gateway.sh", "start-foreground",
+              "-Dsql-gateway.endpoint.rest.address=0.0.0.0", "-Drest.address=flink-jobmanager"]
+    ports: ["127.0.0.1:8083:8083"] # SQL Gateway REST (v3)
+    volumes: *flink-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8083'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      flink-jobmanager: {condition: service_healthy}
+    restart: unless-stopped
+    mem_limit: 1g
+
   producer:
     profiles: [streaming]
     image: de-playground/runner:local
@@ -203,6 +255,7 @@ services:
 
 volumes:
   clickhousedata:
+  flinkcheckpoints:
   kafkadata:
   pgdata:
   seaweeddata:
