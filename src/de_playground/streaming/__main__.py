@@ -7,7 +7,7 @@ import logging
 import os
 
 from de_playground.config import Settings
-from de_playground.streaming import flink_control, producer, spark_stream, topics
+from de_playground.streaming import clickhouse_streaming, flink_control, producer, spark_stream, topics
 from de_playground.streaming.flink.statements import JobConfig
 
 
@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m de_playground.streaming")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("setup", help="create the Kafka topics (idempotent)")
+    sub.add_parser("clickhouse-setup", help="create ClickHouse's Kafka ingestion tables (idempotent)")
     prod = sub.add_parser("produce", help="stream Wikimedia (or synthetic) events into Kafka")
     prod.add_argument("--source", choices=["auto", "wikimedia", "synthetic"], default="auto")
     prod.add_argument("--max-events", type=int, default=None)
@@ -29,6 +30,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "setup":
         created = topics.ensure_topics(settings)
         print(f"Kafka topics created: {created or 'none (all exist)'}")
+    elif args.command == "clickhouse-setup":
+        clickhouse_streaming.run(settings)
+        print("ClickHouse: wikimedia.recentchange and wikimedia.edits_per_minute ingesting from Kafka")
     elif args.command == "spark-stream":
         spark_stream.run(settings, spark_stream.SparkStreamConfig.from_env(os.environ))
     elif args.command in ("job-status", "job-cancel"):

@@ -71,6 +71,8 @@ matrix: env ## Probe every engine x table format and write docs/engine-format-ma
 .PHONY: stream-setup
 stream-setup: env ## Create Kafka topics (+ ClickHouse streaming tables); safe to re-run
 	$(RUN) uv run python -m de_playground.streaming setup
+	@if [ -n "$$($(COMPOSE) $(ALL_PROFILES) ps --status running -q clickhouse)" ]; then \
+		$(RUN) uv run python -m de_playground.streaming clickhouse-setup; fi
 
 FLINK_JOB := /opt/playground/src/de_playground/streaming/flink/job.py
 .PHONY: stream-job stream-status stream-stop

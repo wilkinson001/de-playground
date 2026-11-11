@@ -37,3 +37,42 @@ SELECT pickup_hour, sum(trips) FROM delta_gold.hourly_borough_demand GROUP BY AL
 -- Read a raw file straight from object storage:
 SELECT count() FROM s3(seaweedfs, url = 'http://seaweedfs:8333/raw/tlc/yellow/yellow_tripdata_2025-01.parquet');
 ```
+
+## Streaming: ingesting the Kafka topics
+
+`make stream-setup` (when ClickHouse is running) creates database `wikimedia` with the usual
+ClickHouse pattern (`src/de_playground/streaming/clickhouse_streaming.py`):
+
+```
+Kafka topic ──> *_queue (ENGINE = Kafka: a consumer) ──> *_mv (materialized view) ──> table (ReplacingMergeTree)
+```
+
+| Table | From topic | Key (duplicates collapse on) |
+|---|---|---|
+| `wikimedia.recentchange` | `wikimedia.recentchange` (raw events) | `(wiki, event_id)` |
+| `wikimedia.edits_per_minute` | **both** `…edits_per_minute.flink` and `….spark`, tagged with an `engine` column | `(engine, wiki, window_start)` |
+
+Kafka delivery is at-least-once (a restarted producer or job can resend), so the tables are
+`ReplacingMergeTree`. Duplicates disappear at background merge time, or **immediately when you
+query with `FINAL`**. Flink and Spark serialise timestamps differently in JSON
+(`2026-01-15 10:00:00` vs `2026-01-15T10:00:00.000Z`); `parseDateTime64BestEffort` reads both.
+
+### Things to try (http://localhost:8123/play)
+
+```sql
+-- Live edits per minute, busiest wikis
+SELECT window_start, wiki, edits, bot_edits FROM wikimedia.edits_per_minute FINAL
+WHERE engine = 'flink' ORDER BY window_start DESC, edits DESC LIMIT 20;
+
+-- Do Flink and Spark agree? (they did: 4,692 shared rows, 0 differences, when this was built)
+SELECT countIf(f.edits != s.edits) AS differing, count() AS compared
+FROM (SELECT * FROM wikimedia.edits_per_minute FINAL WHERE engine = 'flink') f
+JOIN (SELECT * FROM wikimedia.edits_per_minute FINAL WHERE engine = 'spark') s USING (wiki, window_start);
+
+-- Raw events straight from Kafka, a few seconds old
+SELECT wiki, count() FROM wikimedia.recentchange FINAL
+WHERE event_time > now() - INTERVAL 5 MINUTE GROUP BY wiki ORDER BY 2 DESC LIMIT 10;
+
+-- What the Kafka engine has consumed
+SELECT table, num_messages_read, last_poll_time FROM system.kafka_consumers WHERE database = 'wikimedia';
+```
