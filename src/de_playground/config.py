@@ -26,6 +26,9 @@ class Settings:
     spark_remote: str
     clickhouse_host: str
     clickhouse_port: int
+    kafka_bootstrap: str
+    flink_url: str
+    flink_sql_gateway_url: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
@@ -47,6 +50,9 @@ class Settings:
             spark_remote=env.get("PLAYGROUND_SPARK_REMOTE", "sc://spark-connect:15002"),
             clickhouse_host=env.get("PLAYGROUND_CLICKHOUSE_HOST", "clickhouse"),
             clickhouse_port=int(env.get("PLAYGROUND_CLICKHOUSE_PORT", "8123")),
+            kafka_bootstrap=env.get("PLAYGROUND_KAFKA_BOOTSTRAP", "kafka:29092"),
+            flink_url=env.get("PLAYGROUND_FLINK_URL", "http://flink-jobmanager:8081"),
+            flink_sql_gateway_url=env.get("PLAYGROUND_FLINK_SQL_GATEWAY_URL", "http://flink-sql-gateway:8083"),
         )
 
     def s3_host_port(self) -> str:

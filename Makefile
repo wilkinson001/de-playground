@@ -1,7 +1,10 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
-PROFILES ?= --profile core --profile spark --profile clickhouse
-RUN := $(COMPOSE) $(PROFILES) --profile tools run --rm --no-deps runner
+# Every profile, so the runner (started with --no-deps) can resolve any service it talks to.
+ALL_PROFILES := --profile core --profile spark --profile clickhouse --profile streaming --profile spark-stream
+BATCH_PROFILES := --profile core --profile spark --profile clickhouse
+STREAM_PROFILES := --profile core --profile streaming --profile clickhouse
+RUN := $(COMPOSE) $(ALL_PROFILES) --profile tools run --rm --no-deps runner
 
 .PHONY: help env test
 
@@ -19,7 +22,10 @@ up: env ## Start core services (postgres, seaweedfs, lakekeeper)
 	$(COMPOSE) --profile core up -d --wait
 
 up-batch: env ## Start core + Spark + ClickHouse (batch exercises)
-	$(COMPOSE) $(PROFILES) up -d --wait
+	$(COMPOSE) $(BATCH_PROFILES) up -d --wait
+
+up-stream: env ## Start core + Kafka + Flink + ClickHouse (streaming exercises)
+	$(COMPOSE) $(STREAM_PROFILES) up -d --wait
 
 down: ## Stop all services (keeps data)
 	$(COMPOSE) --profile '*' down
@@ -42,7 +48,7 @@ test-integration: env ## Integration tests against the running stack
 .PHONY: bootstrap
 bootstrap: env ## Create buckets + Lakekeeper warehouse (+ ClickHouse databases if running); safe to re-run
 	$(RUN) uv run python -m de_playground bootstrap
-	@if [ -n "$$($(COMPOSE) $(PROFILES) ps --status running -q clickhouse)" ]; then \
+	@if [ -n "$$($(COMPOSE) $(ALL_PROFILES) ps --status running -q clickhouse)" ]; then \
 		$(RUN) uv run python -m de_playground clickhouse-setup; fi
 
 MONTHS ?= 2025-01..2025-03
@@ -55,9 +61,13 @@ NS ?= manual
 .PHONY: batch
 batch: download ## Run the medallion pipeline (TARGET=all|duckdb:ducklake|spark:iceberg|spark:delta MONTHS=... NS=manual)
 	$(RUN) uv run python -m de_playground.batch run --target $(TARGET) --months $(MONTHS) --namespace $(NS)
-	@if [ -n "$$($(COMPOSE) $(PROFILES) ps --status running -q clickhouse)" ]; then \
+	@if [ -n "$$($(COMPOSE) $(ALL_PROFILES) ps --status running -q clickhouse)" ]; then \
 		$(RUN) uv run python -m de_playground clickhouse-setup --namespace $(NS); fi
 
 .PHONY: matrix
 matrix: env ## Probe every engine x table format and write docs/engine-format-matrix.md
 	$(RUN) uv run python -m de_playground.matrix
+
+.PHONY: stream-setup
+stream-setup: env ## Create Kafka topics (+ ClickHouse streaming tables); safe to re-run
+	$(RUN) uv run python -m de_playground.streaming setup

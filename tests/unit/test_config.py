@@ -21,6 +21,9 @@ def test_settings_from_env_defaults():
     assert s.spark_remote == "sc://spark-connect:15002"
     assert s.clickhouse_host == "clickhouse"
     assert s.clickhouse_port == 8123
+    assert s.kafka_bootstrap == "kafka:29092"
+    assert s.flink_url == "http://flink-jobmanager:8081"
+    assert s.flink_sql_gateway_url == "http://flink-sql-gateway:8083"
     assert s.s3_host_port() == "seaweedfs:8333"
     assert s.ducklake_attach_uri() == (
         "ducklake:postgres:dbname=ducklake host=postgres port=5432 user=pguser password=pgpass"
