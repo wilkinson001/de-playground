@@ -42,6 +42,35 @@ services:
       retries: 40
     mem_limit: 1g
 
+  lakekeeper-migrate:
+    profiles: [core]
+    image: &lakekeeper-image quay.io/lakekeeper/catalog:v0.14.2
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY}
+      LAKEKEEPER__BASE_URI: http://lakekeeper:8181
+    command: ["migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  lakekeeper:
+    profiles: [core]
+    image: *lakekeeper-image
+    environment: *lakekeeper-env
+    command: ["serve"]
+    ports: ["8181:8181"] # REST catalog at /catalog, UI at /ui
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      lakekeeper-migrate: {condition: service_completed_successfully}
+      seaweedfs: {condition: service_healthy}
+    mem_limit: 512m
+
   runner:
     profiles: [tools]
     build:
@@ -55,6 +84,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       seaweedfs: {condition: service_healthy}
+      lakekeeper: {condition: service_healthy}
     mem_limit: 2g
 
 volumes:

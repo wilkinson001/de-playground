@@ -34,3 +34,7 @@ shell: env ## Shell in the runner container
 
 test-integration: env ## Integration tests against the running stack
 	$(RUN) uv run pytest -m integration $(ARGS)
+
+.PHONY: bootstrap
+bootstrap: env ## Create buckets + Lakekeeper warehouse (safe to re-run)
+	$(RUN) uv run python -m de_playground bootstrap
