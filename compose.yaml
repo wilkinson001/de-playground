@@ -172,6 +172,19 @@ services:
       kafka: {condition: service_healthy}
     mem_limit: 512m
 
+  producer:
+    profiles: [streaming]
+    image: de-playground/runner:local
+    <<: *secrets
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: ["uv", "run", "python", "-m", "de_playground.streaming", "produce", "--source", "auto"]
+    depends_on:
+      kafka: {condition: service_healthy}
+    restart: unless-stopped
+    mem_limit: 256m
+
   runner:
     profiles: [tools]
     build:

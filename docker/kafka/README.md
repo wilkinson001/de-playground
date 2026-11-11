@@ -33,3 +33,21 @@ in `compose.yaml`). A third listener, `CONTROLLER` on 9093, is KRaft's internal 
   the same topic.
 - Inside the container:
   `docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic wikimedia.recentchange --max-messages 5`
+
+## The producer
+
+The `producer` service (`src/de_playground/streaming/producer.py`) starts with `make up-stream`.
+It reads Wikimedia's public EventStreams feed
+(`https://stream.wikimedia.org/v2/stream/recentchange`), flattens each event to a small record
+(`streaming/events.py`) and sends it keyed by `wiki`.
+
+- **Reconnects** resume where they left off, using the SSE `Last-Event-ID` header.
+- **Skipped:** canary (health-check) events and malformed JSON.
+- **Fallback:** if the feed is unreachable for 5 attempts in a row, `--source auto` (the default)
+  switches to synthetic events with the same shape (`streaming/synthetic.py`).
+  Use `--source synthetic` to force it.
+
+Checked when this was built: the live feed delivered about 40 events/s, but **unevenly across
+partitions** (573 / 384 / 40 after ~25 s). Messages are keyed by wiki and a handful of wikis
+(Wikidata, Commons, English Wikipedia) dominate. That skew is why the Flink job sets a source
+idle timeout: see `docker/flink/README.md`.
