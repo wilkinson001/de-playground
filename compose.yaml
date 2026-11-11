@@ -1,0 +1,62 @@
+# Data engineering playground. Services are grouped into profiles so each exercise
+# starts only what it needs:  core | spark | clickhouse | tools
+name: de-playground
+
+x-secrets: &secrets
+  env_file: .env
+
+services:
+  postgres:
+    profiles: [core]
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    <<: *secrets
+    environment:
+      POSTGRES_DB: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 1g
+
+  seaweedfs:
+    profiles: [core]
+    image: chrislusf/seaweedfs:4.48
+    <<: *secrets
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    ports:
+      - "8333:8333" # S3 gateway
+      - "8888:8888" # filer UI
+      - "9333:9333" # master UI
+    volumes:
+      - seaweeddata:/data
+      - ./docker/seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    mem_limit: 1g
+
+  runner:
+    profiles: [tools]
+    build:
+      context: .
+      dockerfile: docker/runner/Dockerfile
+    image: de-playground/runner:local
+    <<: *secrets
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      postgres: {condition: service_healthy}
+      seaweedfs: {condition: service_healthy}
+    mem_limit: 2g
+
+volumes:
+  pgdata:
+  seaweeddata:
