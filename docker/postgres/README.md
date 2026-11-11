@@ -30,3 +30,10 @@ Databases are created on first start by `init/01-databases.sql` (only runs on an
 ## Version notes
 
 Postgres 18 is used everywhere unless a tool fails on it; record any such failure here.
+
+## DuckLake data inlining
+
+DuckLake 1.0 stores *small* inserts inline in the catalog database rather than writing a tiny
+Parquet file (data inlining). Insert a few rows into a DuckLake table and you'll find them in
+Postgres, not in the `ducklake` bucket; insert thousands and Parquet files appear. Run
+`CALL ducklake_flush_inlined_data('lake')` in DuckDB to push inlined rows out to Parquet.
