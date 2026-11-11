@@ -38,3 +38,8 @@ test-integration: env ## Integration tests against the running stack
 .PHONY: bootstrap
 bootstrap: env ## Create buckets + Lakekeeper warehouse (safe to re-run)
 	$(RUN) uv run python -m de_playground bootstrap
+
+MONTHS ?= 2025-01..2025-03
+.PHONY: download
+download: env ## Download TLC months into the raw bucket (MONTHS=2025-01..2025-03)
+	$(RUN) uv run python -m de_playground download --months $(MONTHS)
