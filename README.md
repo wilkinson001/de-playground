@@ -37,13 +37,24 @@ SQL lives in `src/de_playground/batch/sql/`; table schemas in `batch/schemas.py`
 ```mermaid
 flowchart LR
     tlc["NYC TLC trip data<br/>(public CloudFront)"]
+    wm["Wikimedia EventStreams<br/>recentchange (live SSE)"]
 
     subgraph tools["profile: tools"]
         runner["runner (Python 3.12)<br/>pipeline CLI · bootstrap · tests<br/>embedded DuckDB"]
     end
 
+    subgraph streaming_p["profile: streaming"]
+        producer["producer<br/>SSE → Kafka<br/>(synthetic fallback)"]
+        kafka[("Kafka 4.3 KRaft :9092<br/>+ Kafka UI :8080")]
+        flink["Flink 2.0 :8081<br/>JobManager · TaskManager<br/>SQL Gateway :8083"]
+    end
+
     subgraph spark_p["profile: spark"]
         spark["Spark 4 Connect server :15002<br/>Iceberg + Delta connectors"]
+    end
+
+    subgraph spark_stream_p["profile: spark-stream"]
+        sstream["spark-stream (planned)<br/>Structured Streaming client"]
     end
 
     subgraph core["profile: core"]
@@ -67,11 +78,26 @@ flowchart LR
     lk -. "validates warehouse" .-> s3
     ch -- "DataLakeCatalog" --> lk
     ch -- "reads Iceberg + Delta files" --> s3
+
+    wm -- "SSE" --> producer
+    producer -- "raw events" --> kafka
+    kafka -- "raw topic" --> flink
+    flink -- "aggregates topic" --> kafka
+    flink -- "Iceberg tables" --> lk
+    flink -- "Iceberg + Delta files" --> s3
+    runner -- "SQL (tests, matrix)" --> flink
+    sstream -. "planned: queries via Connect" .-> spark
+    kafka -. "planned: raw topic" .-> spark
+    kafka -. "planned: Kafka engine" .-> ch
+
+    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-dasharray:5 5,color:#475569
+    class sstream planned
 ```
 
-More in [`docs/architecture.md`](docs/architecture.md): a stage-by-layer view of what processes
-the data at each step (ingest → bronze → silver → gold → serve, per engine and format), where each
-table format keeps its metadata, and the month-by-month flow.
+Dashed parts are planned for the current phase. More in [`docs/architecture.md`](docs/architecture.md):
+stage-by-layer views of what processes the data at each step, for batch (ingest → bronze →
+silver → gold → serve, per engine and format) and for streaming (producer → Kafka → Flink /
+Spark → bronze and gold), where each table format keeps its metadata, and the month-by-month flow.
 
 ## First run
 
