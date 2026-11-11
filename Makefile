@@ -47,3 +47,9 @@ MONTHS ?= 2025-01..2025-03
 .PHONY: download
 download: env ## Download TLC months into the raw bucket (MONTHS=2025-01..2025-03)
 	$(RUN) uv run python -m de_playground download --months $(MONTHS)
+
+TARGET ?= all
+NS ?= manual
+.PHONY: batch
+batch: download ## Run the medallion pipeline (TARGET=all|duckdb:ducklake|spark:iceberg|spark:delta MONTHS=... NS=manual)
+	$(RUN) uv run python -m de_playground.batch run --target $(TARGET) --months $(MONTHS) --namespace $(NS)

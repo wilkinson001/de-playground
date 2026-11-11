@@ -21,6 +21,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
     mem_limit: 1g
 
   seaweedfs:
@@ -35,12 +36,17 @@ services:
     volumes:
       - seaweeddata:/data
       - ./docker/seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+    environment:
+      # Go's soft heap limit: GC works harder instead of growing past the container limit
+      # (parallel Spark reads/writes otherwise got SeaweedFS OOM-killed at 1g).
+      GOMEMLIMIT: 1600MiB
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
       interval: 3s
       timeout: 3s
       retries: 40
-    mem_limit: 1g
+    restart: unless-stopped
+    mem_limit: 2g
 
   lakekeeper-migrate:
     profiles: [core]
@@ -69,6 +75,7 @@ services:
     depends_on:
       lakekeeper-migrate: {condition: service_completed_successfully}
       seaweedfs: {condition: service_healthy}
+    restart: unless-stopped
     mem_limit: 512m
 
   spark-connect:
@@ -91,6 +98,31 @@ services:
       start_period: 20s
     mem_limit: 8g
 
+  clickhouse:
+    profiles: [clickhouse]
+    image: clickhouse/clickhouse-server:26.8.34.13
+    <<: *secrets
+    environment:
+      # Local playground: the passwordless `default` user may connect from the Compose network.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      - "8123:8123" # HTTP (and the built-in web SQL UI at /play)
+      - "9000:9000" # native protocol
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+      - ./docker/clickhouse/config.d/playground.xml:/etc/clickhouse-server/config.d/playground.xml:ro
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      seaweedfs: {condition: service_healthy}
+      lakekeeper: {condition: service_healthy}
+    mem_limit: 4g
+
   runner:
     profiles: [tools]
     build:
@@ -105,8 +137,9 @@ services:
       postgres: {condition: service_healthy}
       seaweedfs: {condition: service_healthy}
       lakekeeper: {condition: service_healthy}
-    mem_limit: 2g
+    mem_limit: 4g
 
 volumes:
+  clickhousedata:
   pgdata:
   seaweeddata:

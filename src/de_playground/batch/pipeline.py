@@ -60,7 +60,7 @@ def run_layer(engine: SqlEngine, target: Target, layer: Layer, month: Month, sou
     context = _context(engine.dialect, target, month, sources)
     engine.execute(_template(layer).format(**context))
     for table, view in _MERGES[layer]:
-        engine.execute(merge_sql(target, table, view))
+        engine.execute(merge_sql(target, table, engine.stage(view)))
     return _month_count(engine, layer, context)
 
 

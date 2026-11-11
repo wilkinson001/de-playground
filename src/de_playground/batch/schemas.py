@@ -67,7 +67,9 @@ SCHEMAS: dict[str, TableSchema] = {
                 ("airport_fee", "DECIMAL(10,2)"),
                 ("cbd_congestion_fee", "DECIMAL(10,2)"),
             ],
-            keys=["trip_id"],
+            # pickup_month is implied by trip_id, but having the partition column in the MERGE key
+            # lets Iceberg/Delta prune the merge to one month's files.
+            keys=["pickup_month", "trip_id"],
             partition_by="pickup_month",
         ),
         TableSchema(

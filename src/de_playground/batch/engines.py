@@ -7,6 +7,7 @@ as temporary views.
 
 from __future__ import annotations
 
+import tempfile
 from typing import Literal, Protocol
 
 import duckdb
@@ -30,6 +31,10 @@ class SqlEngine(Protocol):
         ...
 
     def register_csv_view(self, name: str, uri: str) -> None: ...
+
+    def stage(self, view: str) -> str:
+        """Prepare a view to be a MERGE source; returns the relation name to merge from."""
+        ...
 
 
 def split_statements(sql: str) -> list[str]:
@@ -85,10 +90,23 @@ class DuckDBEngine:
     def register_csv_view(self, name: str, uri: str) -> None:
         self.con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_csv('{uri}', header = true)")
 
+    def stage(self, view: str) -> str:
+        # Materialise first: a MERGE whose source is a view evaluates the view's window/dedup
+        # inside the MERGE, where DuckDB can't spill, and a full TLC month runs out of memory.
+        staged = f"{view}_staged"
+        self.con.execute(f"CREATE OR REPLACE TEMP TABLE {staged} AS SELECT * FROM {view}")
+        return staged
 
-def connect_ducklake(catalog_uri: str, data_path: str, settings: Settings | None = None) -> DuckDBEngine:
+
+def connect_ducklake(
+    catalog_uri: str, data_path: str, settings: Settings | None = None, memory_limit: str = "2GB"
+) -> DuckDBEngine:
     """Open an in-memory DuckDB session with a DuckLake catalog attached as `lake` and selected."""
     con = duckdb.connect()
+    # An in-memory database has nowhere to spill by default, so large MERGEs would fail with
+    # out-of-memory; give it a spill directory and an explicit cap below the container limit.
+    con.execute(f"SET memory_limit = '{memory_limit}'")
+    con.execute(f"SET temp_directory = '{tempfile.gettempdir()}/duckdb_spill'")
     for ext in ("ducklake", "postgres", "httpfs"):
         con.execute(f"INSTALL {ext}; LOAD {ext}")  # INSTALL is a no-op when already present
     con.execute("SET TimeZone = 'UTC'")
@@ -129,6 +147,9 @@ class SparkEngine:
     def register_parquet_view(self, name: str, uri: str, select_sql: str) -> None:
         self.spark.read.parquet(uri).createOrReplaceTempView("src")
         self.spark.sql(f"CREATE OR REPLACE TEMPORARY VIEW {name} AS {select_sql}").collect()
+
+    def stage(self, view: str) -> str:
+        return view  # Spark plans the view into the MERGE and spills as needed
 
     def register_csv_view(self, name: str, uri: str) -> None:
         self.spark.read.option("header", True).option("inferSchema", True).csv(uri).createOrReplaceTempView(name)

@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Host is Apple Silicon (arm64); every image must run natively on arm64. Emulation only as a last resort, called out in that component's README.
-- Docker budget 32GB RAM / 9 cores. Every heavy service gets an explicit `mem_limit`: postgres 1g, seaweedfs 1g, lakekeeper 512m, spark-connect 8g, clickhouse 4g, runner 2g.
+- Docker budget 32GB RAM / 9 cores. Every heavy service gets an explicit `mem_limit`: postgres 1g, seaweedfs 2g, lakekeeper 512m, spark-connect 8g, clickhouse 4g, runner 2g.
 - Postgres **18** (`pgvector/pgvector:0.8.1-pg18` or later pg18 tag). Use 18 unless a tool fails on it; record any failure in `docker/postgres/README.md`.
 - Spark/connector baseline (known-compatible set; bump only together and only after the Task 8 smoke test passes): Spark `4.0.1` (Scala 2.13, Java 17), `iceberg-spark-runtime-4.0_2.13:1.10.0`, `iceberg-aws-bundle:1.10.0`, `delta-spark_2.13:4.0.0`, `hadoop-aws:3.4.1` + matching AWS SDK v2 bundle. Python client `pyspark-client==4.0.1`.
 - All other image versions pinned to an exact tag at least 2 weeks old. No `latest`.

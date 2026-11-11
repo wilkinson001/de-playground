@@ -44,3 +44,20 @@ def test_split_statements_respects_quotes_and_comments():
     SELECT `c;d`, "e;f" FROM t;;
     """
     assert split_statements(sql) == ["SELECT 'a;b' AS x", 'SELECT `c;d`, "e;f" FROM t']
+
+
+def test_duckdb_can_spill_to_disk(tmp_path):
+    engine = connect_ducklake(f"ducklake:{tmp_path}/cat.ducklake", f"{tmp_path}/data/", memory_limit="1GB")
+    assert engine.query("SELECT current_setting('memory_limit')") == [("953.6 MiB",)]
+    assert engine.query("SELECT current_setting('temp_directory')")[0][0].endswith("duckdb_spill")
+
+
+def test_stage_materialises_view_into_temp_table(tmp_path):
+    engine = _engine(tmp_path)
+    engine.execute("CREATE TEMPORARY VIEW v AS SELECT range AS id FROM range(3)")
+    staged = engine.stage("v")
+    assert staged != "v"
+    assert engine.query(
+        f"SELECT table_type FROM information_schema.tables WHERE table_name = '{staged}'"
+    ) == [("LOCAL TEMPORARY",)]
+    assert engine.query(f"SELECT count(*) FROM {staged}") == [(3,)]
