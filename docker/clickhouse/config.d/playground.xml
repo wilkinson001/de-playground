@@ -1,0 +1,22 @@
+<clickhouse>
+    <!-- S3 credentials for SeaweedFS as a named collection, read from the environment, so table
+         functions and views reference `seaweedfs` instead of embedding keys. -->
+    <named_collections>
+        <seaweedfs>
+            <access_key_id from_env="S3_ACCESS_KEY"/>
+            <secret_access_key from_env="S3_SECRET_KEY"/>
+        </seaweedfs>
+    </named_collections>
+    <!-- Per-endpoint S3 credentials: used when a query reaches SeaweedFS without explicit keys,
+         e.g. reading Iceberg data files found through the Lakekeeper catalog (DataLakeCatalog). -->
+    <s3>
+        <seaweedfs>
+            <endpoint>http://seaweedfs:8333</endpoint>
+            <access_key_id from_env="S3_ACCESS_KEY"/>
+            <secret_access_key from_env="S3_SECRET_KEY"/>
+        </seaweedfs>
+    </s3>
+    <!-- Stay well inside the container's 4 GB limit. -->
+    <max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>
+    <logger><level>warning</level></logger>
+</clickhouse>

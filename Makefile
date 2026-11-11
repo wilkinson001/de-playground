@@ -40,8 +40,10 @@ test-integration: env ## Integration tests against the running stack
 	$(RUN) uv run pytest -m integration $(ARGS)
 
 .PHONY: bootstrap
-bootstrap: env ## Create buckets + Lakekeeper warehouse (safe to re-run)
+bootstrap: env ## Create buckets + Lakekeeper warehouse (+ ClickHouse databases if running); safe to re-run
 	$(RUN) uv run python -m de_playground bootstrap
+	@if [ -n "$$($(COMPOSE) $(PROFILES) ps --status running -q clickhouse)" ]; then \
+		$(RUN) uv run python -m de_playground clickhouse-setup; fi
 
 MONTHS ?= 2025-01..2025-03
 .PHONY: download

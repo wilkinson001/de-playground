@@ -111,6 +111,7 @@ services:
     volumes:
       - clickhousedata:/var/lib/clickhouse
       - ./docker/clickhouse/config.d/playground.xml:/etc/clickhouse-server/config.d/playground.xml:ro
+      - ./docker/clickhouse/users.d/playground.xml:/etc/clickhouse-server/users.d/playground.xml:ro
     ulimits:
       nofile: {soft: 262144, hard: 262144}
     healthcheck:

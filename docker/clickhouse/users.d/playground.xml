@@ -1,0 +1,10 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- DataLakeCatalog databases (Iceberg REST via Lakekeeper) are still experimental. -->
+            <allow_experimental_database_iceberg>1</allow_experimental_database_iceberg>
+            <!-- Let queries use the per-endpoint SeaweedFS keys from config.d (<s3> section). -->
+            <s3_allow_server_credentials_in_user_queries>1</s3_allow_server_credentials_in_user_queries>
+        </default>
+    </profiles>
+</clickhouse>
