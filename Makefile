@@ -93,3 +93,12 @@ stream-spark: env ## Start Spark + the Spark Structured Streaming queries (along
 
 stream-spark-stop: env ## Stop the Spark Structured Streaming queries
 	$(COMPOSE) $(SPARK_STREAM_PROFILES) stop spark-stream
+
+.PHONY: duckdb-ui
+duckdb-ui: env ## DuckDB web UI on the host (http://localhost:4213) over DuckLake, Iceberg and Delta
+	set -a && . ./.env && set +a && uv run python -m de_playground.duckdb_ui
+
+PIPELINE_SERVICES := producer flink-jobmanager flink-taskmanager flink-sql-gateway spark-stream spark-connect kafka-ui kafka clickhouse
+.PHONY: pipelines-down
+pipelines-down: ## Stop every engine/pipeline service but keep the data lake (postgres, seaweedfs, lakekeeper) up
+	$(COMPOSE) $(ALL_PROFILES) stop $(PIPELINE_SERVICES)

@@ -166,6 +166,41 @@ agreed on every shared window (0 differences over 4,692 (window, wiki) rows).
 - **Spark UI** — http://localhost:4040, SQL tab, to watch a `MERGE`.
 - **ClickHouse** — http://localhost:8123/play, query `delta_gold.daily_zone_stats`.
 - **Engine × format matrix** — `docs/engine-format-matrix.md` (`make matrix` regenerates it).
+- **DuckDB UI** — `make duckdb-ui`, every format in one place (see below).
+
+## Querying everything: the DuckDB UI
+
+```bash
+make duckdb-ui              # http://localhost:4213 (Ctrl+C to stop)
+```
+
+DuckDB's web UI (notebooks, a schema browser, result charts) runs **on your Mac**, not in Docker:
+its server only listens on `localhost`, and every playground service publishes its port on
+`127.0.0.1`. Only the data lake needs to be up (`make up`), not the engines that wrote the data.
+Every table format is under the same naming pattern:
+
+| Catalog | What | Example |
+|---|---|---|
+| `lake` | DuckLake (catalog in Postgres) | `lake.manual_gold.daily_zone_stats` |
+| `iceberg` | every Iceberg table in Lakekeeper | `iceberg.spark_stream_gold.edits_per_minute` |
+| `delta` | a view per Delta table found in the `delta` bucket (refreshed each start) | `delta.flink_stream_gold.edits_per_minute` |
+
+Notebooks are saved in `.data/duckdb-ui/playground.duckdb` (git-ignored). The UI downloads its
+web assets from `ui.duckdb.org`; your queries and data stay local. Code: `src/de_playground/duckdb_ui.py`.
+
+Try comparing the same gold table across all three formats:
+
+```sql
+SELECT 'ducklake' AS fmt, count(*) FROM lake.manual_gold.daily_zone_stats
+UNION ALL SELECT 'iceberg', count(*) FROM iceberg.manual_gold.daily_zone_stats
+UNION ALL SELECT 'delta', count(*) FROM delta.manual_gold.daily_zone_stats;
+```
+
+## Saving battery
+
+`make pipelines-down` stops every engine (Kafka, producer, Flink, Spark, ClickHouse) and leaves
+only the data lake (Postgres, SeaweedFS, Lakekeeper: ~1.6 GB, idle CPU) running, which is all the
+DuckDB UI needs. `make down` stops everything, keeping the data; `make nuke` also deletes it.
 
 ## Tests
 
