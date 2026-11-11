@@ -8,6 +8,7 @@ failure with its first error line; nothing is assumed from docs.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -20,7 +21,7 @@ from de_playground.config import Settings
 Op = Literal["create", "append", "overwrite", "merge", "read"]
 OPS: tuple[Op, ...] = ("create", "append", "overwrite", "merge", "read")
 FORMATS = ("ducklake", "iceberg", "delta")
-ENGINES = ("duckdb", "spark", "python", "clickhouse")
+ENGINES = ("duckdb", "spark", "flink", "python", "clickhouse")
 SEED_ROWS = 3
 
 _SCHEMA = pa.schema([("id", pa.int32()), ("v", pa.string())])
@@ -176,8 +177,80 @@ class SparkAdapter:
                 f"CREATE OR REPLACE TABLE {self.ref(fmt, 'seed')} USING {fmt} AS "
                 "SELECT * FROM VALUES (1, 'a'), (2, 'b'), (3, 'c') AS s(id, v)"
             )
-            for engine in ("duckdb", "python", "clickhouse"):
+            for engine in ("duckdb", "flink", "python", "clickhouse"):
                 self.engine.execute(f"CREATE OR REPLACE TABLE {self.ref(fmt, f'{engine}_writable')} (id INT, v STRING) USING {fmt}")
+
+
+class FlinkAdapter:
+    """Flink SQL in batch mode through the SQL Gateway. Delta is sink-only in Flink: the connector
+    writes (and creates the table on first write) but can't read, so counts use DuckDB."""
+
+    name = "flink"
+
+    def __init__(self, settings: Settings):
+        from de_playground.batch.engines import connect_ducklake
+        from de_playground.streaming.flink import statements
+        from de_playground.streaming.flink_gateway import FlinkSql
+
+        self.statements = statements
+        self.s3_client = storage.s3_client(settings)
+        self.sql = FlinkSql(settings, {"execution.runtime-mode": "batch"})
+        self.sql.open()
+        self.sql.execute(statements.iceberg_catalog_ddl(settings.lakekeeper_url, settings.iceberg_warehouse,
+                                                        settings.s3_endpoint, settings.s3_access_key,
+                                                        settings.s3_secret_key))
+        tmp = tempfile.mkdtemp(prefix="matrix_flink_")
+        self.duck = connect_ducklake(f"ducklake:{tmp}/c.ducklake", f"{tmp}/data/", settings)
+        self.duck.execute("INSTALL delta; LOAD delta")
+        self.table = {"iceberg": "flink_t", "delta": "flink_t"}
+
+    def unsupported(self, fmt: str) -> str | None:
+        return "no Flink connector for DuckLake" if fmt == "ducklake" else None
+
+    def use_spark_table(self, fmt: str) -> None:
+        self.table[fmt] = "flink_writable"
+
+    def _ref(self, fmt: str, table: str | None = None) -> str:
+        table = table or self.table[fmt]
+        if fmt == "iceberg":
+            return f"lakehouse.matrix.{table}"
+        # Delta tables are reached through a temporary table bound to the path.
+        alias = f"delta_{table}"
+        self.sql.execute(f"CREATE TEMPORARY TABLE IF NOT EXISTS {alias} (id INT, v STRING) WITH ("
+                         f"{self.statements.delta_options(f's3a://delta/matrix/{table}')})")
+        return alias
+
+    def create(self, fmt: str) -> None:
+        if fmt == "delta":
+            # No CREATE for Delta: the connector creates the table on its first write.
+            storage.delete_prefix(self.s3_client, "delta", "matrix/flink_t/")
+            self._ref(fmt)
+            return
+        self.sql.execute("CREATE DATABASE IF NOT EXISTS lakehouse.matrix")
+        self.sql.execute("DROP TABLE IF EXISTS lakehouse.matrix.flink_t")
+        self.sql.execute("CREATE TABLE lakehouse.matrix.flink_t (id INT, v STRING)")
+
+    def count(self, fmt: str) -> int:
+        if fmt == "delta":
+            path = f"delta/matrix/{self.table[fmt]}"
+            if not self.s3_client.list_objects_v2(Bucket="delta", Prefix=f"matrix/{self.table[fmt]}/_delta_log/").get("KeyCount"):
+                raise RuntimeError("no Delta table exists until the first write: the connector has no CREATE")
+            return self.duck.query(f"SELECT count(*) FROM delta_scan('s3://{path}')")[0][0]
+        return self.sql.execute(f"SELECT count(*) FROM {self._ref(fmt)}")[0][0]
+
+    def append(self, fmt: str) -> None:
+        self.sql.execute(f"INSERT INTO {self._ref(fmt)} VALUES (1, 'a'), (2, 'b')")
+
+    def overwrite(self, fmt: str) -> None:
+        self.sql.execute(f"INSERT OVERWRITE {self._ref(fmt)} VALUES (10, 'x')")
+
+    def merge(self, fmt: str) -> None:
+        self.sql.execute(
+            f"MERGE INTO {self._ref(fmt)} t USING (SELECT 10 AS id, 'y' AS v UNION ALL SELECT 11, 'z') {_MERGE_TAIL}"
+        )
+
+    def read(self, fmt: str) -> int:
+        return self.sql.execute(f"SELECT count(*) FROM {self._ref(fmt, 'seed')}")[0][0]
 
 
 class PythonAdapter:
@@ -365,6 +438,7 @@ def run_all(settings: Settings, adapters: dict[str, Callable[[Settings], object]
     factories = adapters or {
         "duckdb": DuckDBAdapter,
         "spark": SparkAdapter,
+        "flink": FlinkAdapter,
         "python": PythonAdapter,
         "clickhouse": ClickHouseAdapter,
     }

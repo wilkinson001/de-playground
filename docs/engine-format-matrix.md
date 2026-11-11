@@ -16,6 +16,7 @@ Operations, on a 2-column table in namespace `matrix`:
 |---|---|---|---|---|---|
 | duckdb | ✅ | ✅ | ✅ | ✅ | ✅ |
 | spark | — | — | — | — | — |
+| flink | — | — | — | — | — |
 | python | — | — | — | — | — |
 | clickhouse | — | — | — | — | — |
 
@@ -25,6 +26,7 @@ Operations, on a 2-column table in namespace `matrix`:
 |---|---|---|---|---|---|
 | duckdb | ✅ | ✅ | ✅ | ✅ | ✅ |
 | spark | ✅ | ✅ | ✅ | ✅ | ✅ |
+| flink | ✅ | ✅ | ✅ | ❌ | ✅ |
 | python | ✅ | ✅ | ✅ | ✅ | ✅ |
 | clickhouse | ✅ | ✅ | ❌ | ❌ | ✅ |
 
@@ -34,6 +36,7 @@ Operations, on a 2-column table in namespace `matrix`:
 |---|---|---|---|---|---|
 | duckdb | ❌ | ❌ | ❌ | ❌ | ✅ |
 | spark | ✅ | ✅ | ✅ | ✅ | ✅ |
+| flink | ❌ | ✅ | ❌ | ❌ | ❌ |
 | python | ✅ | ✅ | ✅ | ✅ | ✅ |
 | clickhouse | ❌ | ✅ | ❌ | ❌ | ✅ |
 
@@ -43,6 +46,11 @@ Operations, on a 2-column table in namespace `matrix`:
 - **duckdb / delta / append**: Invalid Input Error: Cannot execute statement of type "INSERT" on database "delta_duckdb_writable" which is attached in read-only mode! (on a table created by Spark (this engine couldn't create one))
 - **duckdb / delta / overwrite**: Binder Error: Can only delete from base table (on a table created by Spark (this engine couldn't create one))
 - **duckdb / delta / merge**: Binder Error: Can only merge into base tables! (on a table created by Spark (this engine couldn't create one))
+- **flink / iceberg / merge**: Caused by: org.apache.flink.table.api.TableException: Unsupported query: MERGE INTO lakehouse.matrix.flink_t t USING (SELECT 10 AS id, 'y' AS v UNION ALL SELECT 11, 'z') s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)
+- **flink / delta / create**: no Delta table exists until the first write: the connector has no CREATE
+- **flink / delta / overwrite**: Caused by: org.apache.flink.table.api.ValidationException: INSERT OVERWRITE requires that the underlying DynamicTableSink of table 'default_catalog.default_database.delta_flink_writable' implements the SupportsOverwrite interface. (on a table created by Spark (this engine couldn't create one))
+- **flink / delta / merge**: Caused by: org.apache.flink.table.api.TableException: Unsupported query: MERGE INTO delta_flink_writable t USING (SELECT 10 AS id, 'y' AS v UNION ALL SELECT 11, 'z') s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v) (on a table created by Spark (this engine couldn't create one))
+- **flink / delta / read**: Caused by: org.apache.flink.table.api.ValidationException: Connector 'delta' can only be used as a sink. It cannot be used as a source.
 - **clickhouse / iceberg / overwrite**: Received ClickHouse exception, code: 48, server response: Code: 48. DB::Exception: Truncate is not supported for data lake engine. (NOT_IMPLEMENTED) (for url http://clickhouse:8123)
 - **clickhouse / iceberg / merge**: Received ClickHouse exception, code: 62, server response: Code: 62. DB::Exception: Syntax error: failed at position 1 (MERGE): MERGE INTO default.matrix_iceberg_t t USING (SELECT 10 AS id, 'y' AS v) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, ... Expected 
 - **clickhouse / delta / create**: Received ClickHouse exception, code: 742, server response: Code: 742. DB::Exception: Received DeltaLake kernel error GenericError: Generic delta kernel error: No files in log segment (in snapshot_builder_build). (DELTA_KERNEL_ERROR) (for url http://clickhouse:8123)
@@ -52,6 +60,7 @@ Operations, on a 2-column table in namespace `matrix`:
 
 Caveats:
 
+- flink / delta / append: on a table created by Spark (this engine couldn't create one)
 - clickhouse / iceberg / create: path-based (IcebergS3 engine); not registered in the Lakekeeper catalog
 - clickhouse / delta / append: on a table created by Spark (this engine couldn't create one)
 
@@ -59,5 +68,6 @@ Caveats:
 Not applicable:
 
 - spark / ducklake: no usable Spark connector (MotherDuck's is write-only/append-only and Spark 3 only)
+- flink / ducklake: no Flink connector for DuckLake
 - python / ducklake: DuckLake is used from Python through DuckDB (see the duckdb row)
 - clickhouse / ducklake: ClickHouse has no DuckLake support
