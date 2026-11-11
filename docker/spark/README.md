@@ -36,3 +36,35 @@ intermittently failing with S3 404s. Use plain `DROP TABLE`.
 - After a pipeline run, `SELECT * FROM iceberg.manual_silver.trips.snapshots` — Iceberg metadata tables.
 - `DESCRIBE HISTORY delta.`s3a://delta/manual_silver/trips`` — Delta's transaction log as a table.
 - Watch a MERGE in the Spark UI's SQL tab and compare how Iceberg and Delta rewrite files.
+
+## Structured Streaming (the streaming track)
+
+`make stream-spark` starts Spark Connect plus the `spark-stream` service (profile `spark-stream`),
+which runs `src/de_playground/streaming/spark_stream.py`. That does the **same work as the Flink
+job**: it reads `wikimedia.recentchange` from Kafka, writes bronze to Iceberg and Delta, and writes
+1-minute per-wiki aggregates (30 s watermark, append mode) to Iceberg, Delta and
+`wikimedia.edits_per_minute.spark`. Its tables are under `spark_stream_*`. `make stream-spark-stop`
+stops it.
+
+- **Five queries, one per sink**, each with its own checkpoint under `/opt/spark/checkpoints`
+  (the `sparkcheckpoints` volume) and its own Kafka read of the source topic. Flink, by contrast,
+  runs one job that reads Kafka once and fans out.
+- **Micro-batches every 10 s.** Iceberg and Delta commit per micro-batch; the Kafka sink is
+  at-least-once.
+- **One global watermark.** Spark tracks the maximum event time seen across all partitions minus
+  30 s. Unlike Flink, which takes the minimum across partitions, a quiet Kafka partition can't
+  hold Spark's windows open, but a single far-future event can close them early.
+- **The client keeps the session alive.** The queries run on the Connect server, and Spark
+  Connect keeps a disconnected session's queries running until the session times out. So the
+  `spark-stream` process stops its queries on SIGTERM (`stop_grace_period: 30s`). Restarting with
+  the same checkpoints stops any older run (`spark.sql.streaming.stopActiveRunOnRestart`).
+- **Kafka connector jars** (`spark-sql-kafka-0-10`, `spark-token-provider-kafka-0-10`,
+  `kafka-clients` 3.9.1, `commons-pool2` 2.12.0) are baked into the image like the other connectors.
+
+**Flink and Spark agree.** `test_spark_and_flink_gold_match` checks it on a test topic, and on the
+live Wikimedia feed the two engines' Delta gold matched on **66 one-minute windows, 4,365
+(window, wiki) rows, 0 differences**.
+
+Things to try: the Spark UI's **Structured Streaming** tab (http://localhost:4040/StreamingQuery/)
+shows each query's input rate, batch duration and watermark. Compare it with the Flink UI's
+job graph for the same work.

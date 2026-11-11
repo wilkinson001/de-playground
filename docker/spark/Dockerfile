@@ -14,9 +14,19 @@ ADD --chmod=644 \
     ${MAVEN}/software/amazon/awssdk/bundle/2.24.6/bundle-2.24.6.jar \
     /opt/spark/jars/
 
+# Kafka source/sink for Structured Streaming. kafka-clients and commons-pool2 are the versions
+# spark-sql-kafka-0-10_2.13:4.0.1's POM (and Spark 4.0.1's parent POM) name.
+ADD --chmod=644 \
+    ${MAVEN}/org/apache/spark/spark-sql-kafka-0-10_2.13/4.0.1/spark-sql-kafka-0-10_2.13-4.0.1.jar \
+    ${MAVEN}/org/apache/spark/spark-token-provider-kafka-0-10_2.13/4.0.1/spark-token-provider-kafka-0-10_2.13-4.0.1.jar \
+    ${MAVEN}/org/apache/kafka/kafka-clients/3.9.1/kafka-clients-3.9.1.jar \
+    ${MAVEN}/org/apache/commons/commons-pool2/2.12.0/commons-pool2-2.12.0.jar \
+    /opt/spark/jars/
+
 COPY spark-defaults.conf /opt/spark/conf/spark-defaults.conf
 COPY entrypoint.sh /opt/playground/entrypoint.sh
-RUN chmod 755 /opt/playground/entrypoint.sh && mkdir -p /tmp/spark-events && chown spark /tmp/spark-events
+RUN chmod 755 /opt/playground/entrypoint.sh && mkdir -p /tmp/spark-events /opt/spark/checkpoints \
+ && chown spark /tmp/spark-events /opt/spark/checkpoints
 
 USER spark
 ENTRYPOINT ["/opt/playground/entrypoint.sh"]

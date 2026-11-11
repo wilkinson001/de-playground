@@ -87,6 +87,8 @@ services:
       context: docker/spark
     image: de-playground/spark-connect:4.0.1
     <<: *secrets
+    volumes:
+      - sparkcheckpoints:/opt/spark/checkpoints # Structured Streaming checkpoints
     ports:
       - "127.0.0.1:15002:15002" # Spark Connect (sc://localhost:15002)
       - "127.0.0.1:4040:4040"   # Spark UI
@@ -224,6 +226,21 @@ services:
     restart: unless-stopped
     mem_limit: 1g
 
+  spark-stream:
+    profiles: [spark-stream]
+    image: de-playground/runner:local
+    <<: *secrets
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: ["uv", "run", "python", "-m", "de_playground.streaming", "spark-stream"]
+    depends_on:
+      spark-connect: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    restart: unless-stopped
+    stop_grace_period: 30s # SIGTERM stops the queries on the Spark Connect server
+    mem_limit: 512m
+
   producer:
     profiles: [streaming]
     image: de-playground/runner:local
@@ -259,3 +276,4 @@ volumes:
   kafkadata:
   pgdata:
   seaweeddata:
+  sparkcheckpoints:

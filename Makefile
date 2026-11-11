@@ -83,3 +83,11 @@ stream-status: env ## Show the Flink streaming job
 
 stream-stop: env ## Cancel the Flink streaming job
 	$(RUN) uv run python -m de_playground.streaming job-cancel
+
+SPARK_STREAM_PROFILES := $(STREAM_PROFILES) --profile spark --profile spark-stream
+.PHONY: stream-spark stream-spark-stop
+stream-spark: env ## Start Spark + the Spark Structured Streaming queries (alongside the streaming stack)
+	$(COMPOSE) $(SPARK_STREAM_PROFILES) up -d --wait spark-connect spark-stream
+
+stream-spark-stop: env ## Stop the Spark Structured Streaming queries
+	$(COMPOSE) $(SPARK_STREAM_PROFILES) stop spark-stream

@@ -7,7 +7,7 @@ import logging
 import os
 
 from de_playground.config import Settings
-from de_playground.streaming import flink_control, producer, topics
+from de_playground.streaming import flink_control, producer, spark_stream, topics
 from de_playground.streaming.flink.statements import JobConfig
 
 
@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> None:
     prod.add_argument("--source", choices=["auto", "wikimedia", "synthetic"], default="auto")
     prod.add_argument("--max-events", type=int, default=None)
     prod.add_argument("--topic", default=topics.RAW_TOPIC)
+    sub.add_parser("spark-stream", help="run the Spark Structured Streaming queries until stopped")
     sub.add_parser("job-status", help="list running Flink streaming jobs")
     sub.add_parser("job-cancel", help="cancel the Flink streaming job (so a resubmit replaces it)")
     args = parser.parse_args(argv)
@@ -28,6 +29,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "setup":
         created = topics.ensure_topics(settings)
         print(f"Kafka topics created: {created or 'none (all exist)'}")
+    elif args.command == "spark-stream":
+        spark_stream.run(settings, spark_stream.SparkStreamConfig.from_env(os.environ))
     elif args.command in ("job-status", "job-cancel"):
         name = JobConfig.from_env(os.environ).job_name
         if args.command == "job-cancel":
