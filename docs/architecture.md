@@ -2,7 +2,6 @@
 
 What runs where in the playground, how data moves through it (a month of taxi trips in batch,
 a live stream of Wikimedia edits in streaming), and what does the work at each stage.
-Parts drawn **dashed** are planned for the current phase but not built yet.
 Diagrams are [Mermaid](https://mermaid.js.org) and render on GitHub; edit them as text.
 
 ## Components
@@ -34,7 +33,7 @@ flowchart LR
     end
 
     subgraph spark_stream_p["profile: spark-stream"]
-        sstream["spark-stream (planned)<br/>Structured Streaming client"]
+        sstream["spark-stream<br/>Structured Streaming client"]
     end
 
     subgraph core["profile: core"]
@@ -66,12 +65,10 @@ flowchart LR
     flink -- "Iceberg tables" --> lk
     flink -- "Iceberg + Delta files" --> s3
     runner -- "SQL (tests, matrix)" --> flink
-    sstream -. "planned: queries via Connect" .-> spark
-    kafka -. "planned: raw topic" .-> spark
-    kafka -. "planned: Kafka engine" .-> ch
-
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-dasharray:5 5,color:#475569
-    class sstream planned
+    sstream -- "starts queries via Connect" --> spark
+    kafka -- "raw topic" --> spark
+    spark -- "aggregates topic" --> kafka
+    kafka -- "Kafka engine: raw + aggregates" --> ch
 ```
 
 | Component | Role | Where it's described |
@@ -81,11 +78,11 @@ flowchart LR
 | SeaweedFS | The only object store. Every format's data files live here. | `docker/seaweedfs/README.md` |
 | Lakekeeper | Iceberg REST catalog (warehouse `lakehouse` → bucket `iceberg`). No credential vending: clients bring their own S3 keys. | `docker/lakekeeper/README.md` |
 | Spark Connect | Spark 4.0.1 in local mode with Iceberg 1.10 and Delta 4.0; clients only need a thin gRPC client. | `docker/spark/README.md` |
-| ClickHouse | Reads the gold tables in place: Iceberg through the Lakekeeper catalog, Delta through `deltaLake()` views. *Planned:* ingests the Kafka topics with its Kafka engine. | `docker/clickhouse/README.md` |
+| ClickHouse | Reads the gold tables in place: Iceberg through the Lakekeeper catalog, Delta through `deltaLake()` views. Ingests the Kafka topics with its Kafka engine into `wikimedia.*` tables. | `docker/clickhouse/README.md` |
 | Kafka + Kafka UI | One KRaft broker. Topics: `wikimedia.recentchange` (raw) and one aggregates topic per streaming engine. | `docker/kafka/README.md` |
 | producer | Reads the live Wikimedia feed (reconnects with `Last-Event-ID`), flattens events, sends them keyed by wiki; switches to synthetic events if the feed is down. | `src/de_playground/streaming/producer.py` |
 | Flink | 2.0.1 session cluster with PyFlink and Kafka, Iceberg and Delta connectors. Runs the streaming job; its SQL Gateway lets the runner execute Flink SQL. | `docker/flink/README.md` |
-| spark-stream *(planned)* | Spark Structured Streaming doing the same work as the Flink job, on the existing Spark Connect server. | — |
+| spark-stream | Starts Spark Structured Streaming queries (the same work as the Flink job) on the Spark Connect server and keeps the session open; stops them on SIGTERM. | `src/de_playground/streaming/spark_stream.py`, `docker/spark/README.md` |
 
 ## Processing stages and data layers
 
@@ -190,11 +187,11 @@ picture stays the same; only the box at the top changes.
 The streaming track in the same style as the batch picture above: columns are stages, rows are
 the streaming engines. Both engines read the **same raw topic** and do the same work, each into
 its own namespace and aggregates topic, so their output can be compared. Colours as above, plus
-red = Flink and dashed = planned.
+red = Flink.
 
 ```mermaid
 flowchart LR
-    orch{{"Control<br/>make stream-job (PyFlink, flink run)<br/>flink_control.submit (SQL Gateway)<br/>(phase 4: orchestrators)"}}
+    orch{{"Control<br/>make stream-job (PyFlink) · make stream-spark<br/>flink_control.submit (SQL Gateway)<br/>(phase 4: orchestrators)"}}
 
     subgraph st_src["Source"]
         wm[("Wikimedia EventStreams<br/>recentchange<br/>(or synthetic events)")]
@@ -219,7 +216,7 @@ flowchart LR
 
     subgraph lane_spark["spark_stream · Spark"]
         direction LR
-        s_src("Kafka source (planned)<br/>withWatermark 30 s<br/>micro-batch every 10 s")
+        s_src("Kafka source · five queries<br/>withWatermark 30 s<br/>micro-batch every 10 s")
         s_bz[("Bronze<br/>spark_stream_bronze.recentchange<br/>Iceberg + Delta")]
         s_win("1-min window per wiki<br/>append mode")
         s_gd[("Gold<br/>spark_stream_gold.edits_per_minute<br/>Iceberg + Delta")]
@@ -231,17 +228,17 @@ flowchart LR
 
     subgraph st_serve["Serve"]
         q_read("DuckDB · ClickHouse · Spark<br/>read the lake tables")
-        q_ch("ClickHouse Kafka engine<br/>wikimedia.* tables<br/>(planned)")
+        q_ch("ClickHouse Kafka engine<br/>wikimedia.recentchange<br/>wikimedia.edits_per_minute (both engines)")
     end
 
     wm --> prod --> raw_t
     raw_t --> f_src
-    raw_t -.-> s_src
+    raw_t --> s_src
     f_gd --> q_read
-    s_gd -.-> q_read
-    raw_t -.-> q_ch
-    f_agg -.-> q_ch
-    s_agg -.-> q_ch
+    s_gd --> q_read
+    raw_t --> q_ch
+    f_agg --> q_ch
+    s_agg --> q_ch
 
     orch -.-> lane_flink
     orch -.-> lane_spark
@@ -252,27 +249,34 @@ flowchart LR
     classDef spark fill:#fde2d4,stroke:#ea580c,color:#0f172a
     classDef clickhouse fill:#dcfce7,stroke:#16a34a,color:#0f172a
     classDef control fill:#ede9fe,stroke:#7c3aed,color:#0f172a
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-dasharray:5 5,color:#475569
-    class wm,raw_t,f_bz,f_gd,f_agg data
+    class wm,raw_t,f_bz,f_gd,f_agg,s_bz,s_gd,s_agg data
     class prod python
     class f_src,f_win flink
-    class q_read clickhouse
+    class s_src,s_win spark
+    class q_read,q_ch clickhouse
     class orch control
-    class s_src,s_bz,s_win,s_gd,s_agg,q_ch planned
 ```
 
 | Stage | What does the work | Code | Reads | Writes | Delivery |
 |---|---|---|---|---|---|
 | **Ingest** | the `producer` service (Python) | `streaming/producer.py`, `events.py` | Wikimedia SSE (or `synthetic.py`) | `wikimedia.recentchange` | acks=all; resumes with `Last-Event-ID` after a disconnect |
-| **Bronze** | Flink (Spark planned) | `streaming/flink/statements.py` | the raw topic, from the job's consumer-group offsets | `<ns>_bronze.recentchange` in Iceberg and Delta, partitioned by `event_date` | exactly-once: both sinks commit on Flink checkpoints (30 s) |
-| **Gold** | the same engine | same | the same source, windowed by event time | `<ns>_gold.edits_per_minute` (Iceberg, Delta) + the engine's aggregates topic | a window is written once, when the watermark passes its end; later events are dropped from it (but are in bronze); Kafka sink is at-least-once |
-| **Serve** | DuckDB, ClickHouse, Spark read the tables; ClickHouse will ingest the topics (planned) | — | lake tables / topics | — | — |
+| **Bronze** | Flink or Spark | `streaming/flink/statements.py` | the raw topic, from the job's consumer-group offsets | `<ns>_bronze.recentchange` in Iceberg and Delta, partitioned by `event_date` | exactly-once: both sinks commit on Flink checkpoints (30 s) |
+| **Gold** | the same engine | Flink: same · Spark: `streaming/spark_stream.py` | the same source, windowed by event time | `<ns>_gold.edits_per_minute` (Iceberg, Delta) + the engine's aggregates topic | a window is written once, when the watermark passes its end; later events are dropped from it (but are in bronze); Kafka sink is at-least-once |
+| **Serve** | DuckDB, ClickHouse, Spark read the lake tables; ClickHouse also ingests the topics | `streaming/clickhouse_streaming.py` | lake tables; raw + both aggregates topics | `wikimedia.recentchange`, `wikimedia.edits_per_minute` (`engine` column) | ReplacingMergeTree collapses Kafka's at-least-once duplicates (query with `FINAL`) |
 
 The streaming job's statements are rendered once by `build_statements` and run either by the
 PyFlink entrypoint (`make stream-job`) or through the SQL Gateway (`flink_control.submit`, used by
-the tests), so both paths run identical SQL. Things the stream taught us are written up in
-`docker/flink/README.md`: the watermark is the minimum across Kafka partitions, Flink-written
-Delta tables need a v2Checkpoint-capable reader, and more.
+the tests), so both paths run identical SQL. Spark runs the same logic as DataFrame code in
+`spark_stream.py`. A test runs both over the same topic and asserts identical gold, and on the
+live feed they matched on every shared window. The differences between the engines are written up in
+`docker/flink/README.md` and `docker/spark/README.md`.
+
+| | Flink | Spark Structured Streaming |
+|---|---|---|
+| Runs as | one job (statement set): Kafka read once, five sinks | five queries, each with its own Kafka read and checkpoint |
+| Watermark | **minimum** across partitions; quiet partitions must be marked idle | one **global** watermark (max event time − delay) |
+| Commits | on checkpoints (30 s) | per micro-batch (trigger 10 s) |
+| Started by | `flink run` / SQL Gateway; runs without a client | a client session (`spark-stream`) that must stay up and stop its queries on exit |
 
 ## Where each table format keeps its metadata
 
@@ -347,7 +351,6 @@ What each step guarantees:
 
 ## Coming later
 
-Phase 3 (in progress) completes the streaming track: Spark Structured Streaming alongside Flink,
-ClickHouse ingesting the topics, and Flink in the engine × format matrix. Phase 4 adds the orchestrators (Dagster, Prefect, DBOS) wrapping `run_layer`/`run_month`; phase 5
+Phase 4 adds the orchestrators (Dagster, Prefect, DBOS) wrapping `run_layer`/`run_month`; phase 5
 dbt, Debezium and OpenLineage; phase 6 the AI layer (Ollama, LangGraph, NVIDIA Auto Ontology).
 See the design doc: `docs/superpowers/specs/2026-11-11-de-playground-design.md`.

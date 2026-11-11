@@ -4,7 +4,7 @@ A local playground for trying out modern data engineering tools on realistic dat
 runs in Docker Compose on one laptop; services are grouped into profiles so each exercise starts
 only what it needs. Design: `docs/superpowers/specs/2026-11-11-de-playground-design.md`.
 
-## What's here so far (phases 1–2)
+## What's here so far (phases 1–3)
 
 | Piece | What it does | Docs |
 |---|---|---|
@@ -14,6 +14,10 @@ only what it needs. Design: `docs/superpowers/specs/2026-11-11-de-playground-des
 | Spark 4 (Spark Connect) | Writes Iceberg and Delta | `docker/spark/README.md` |
 | ClickHouse | Reads the gold tables | `docker/clickhouse/README.md` |
 | DuckDB | Embedded; writes DuckLake | `src/de_playground/batch/engines.py` |
+| Kafka 4.3 (KRaft) + Kafka UI | The streaming backbone | `docker/kafka/README.md` |
+| producer | Live Wikimedia edits (or synthetic) into Kafka | `docker/kafka/README.md` |
+| Flink 2.0 (PyFlink) | Streaming job writing Iceberg, Delta and Kafka | `docker/flink/README.md` |
+| Spark Structured Streaming | The same streaming work as Flink, for comparison | `docker/spark/README.md` |
 
 **The batch pipeline** takes NYC TLC yellow-taxi trips through bronze → silver → gold,
 **incrementally, one month at a time**, in three variants that share the same SQL:
@@ -31,6 +35,16 @@ only what it needs. Design: `docs/superpowers/specs/2026-11-11-de-playground-des
 - **Gold** — `daily_zone_stats`, `hourly_borough_demand`, `payment_tip_stats`, `MERGE`d per month.
 
 SQL lives in `src/de_playground/batch/sql/`; table schemas in `batch/schemas.py`.
+
+**The streaming track** takes live Wikimedia edits (every edit to every wiki, ~40/s) through
+Kafka into **two streaming engines doing the same work**, Flink and Spark Structured Streaming:
+
+- **Bronze**: every event, in Iceberg *and* Delta (`<engine>_stream_bronze.recentchange`).
+- **Gold**: 1-minute windows per wiki (edits, bot/human, new pages, bytes added/removed) in
+  Iceberg, Delta and a Kafka topic per engine. Event time, 30 s watermark; late events are dropped
+  from their window but kept in bronze.
+- **ClickHouse** ingests the raw topic and both engines' aggregates from Kafka, for live queries
+  and a side-by-side engine comparison.
 
 ## Architecture
 
@@ -54,7 +68,7 @@ flowchart LR
     end
 
     subgraph spark_stream_p["profile: spark-stream"]
-        sstream["spark-stream (planned)<br/>Structured Streaming client"]
+        sstream["spark-stream<br/>Structured Streaming client"]
     end
 
     subgraph core["profile: core"]
@@ -86,15 +100,13 @@ flowchart LR
     flink -- "Iceberg tables" --> lk
     flink -- "Iceberg + Delta files" --> s3
     runner -- "SQL (tests, matrix)" --> flink
-    sstream -. "planned: queries via Connect" .-> spark
-    kafka -. "planned: raw topic" .-> spark
-    kafka -. "planned: Kafka engine" .-> ch
-
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-dasharray:5 5,color:#475569
-    class sstream planned
+    sstream -- "starts queries via Connect" --> spark
+    kafka -- "raw topic" --> spark
+    spark -- "aggregates topic" --> kafka
+    kafka -- "Kafka engine: raw + aggregates" --> ch
 ```
 
-Dashed parts are planned for the current phase. More in [`docs/architecture.md`](docs/architecture.md):
+More in [`docs/architecture.md`](docs/architecture.md):
 stage-by-layer views of what processes the data at each step, for batch (ingest → bronze →
 silver → gold → serve, per engine and format) and for streaming (producer → Kafka → Flink /
 Spark → bronze and gold), where each table format keeps its metadata, and the month-by-month flow.
@@ -123,7 +135,30 @@ Reference row counts for Jan–Mar 2025 (identical in all three formats):
 
 On an M5 Pro a month takes ~4s end to end in DuckDB and ~25–30s in Spark.
 
-## Where to look afterwards
+## Streaming run
+
+```bash
+make up-stream              # core + Kafka + producer + Flink + ClickHouse (≈16 GB)
+make bootstrap              # if not done yet
+make stream-setup           # Kafka topics + ClickHouse's Kafka ingestion tables (safe to re-run)
+make stream-job             # submit the PyFlink job (re-running replaces it)
+make stream-spark           # + Spark and its Structured Streaming queries (≈24 GB in total)
+```
+
+`make stream-status`, `make stream-stop` and `make stream-spark-stop` manage them. Within a
+minute or two:
+
+- **Flink UI**: http://localhost:8081, the running job's graph, watermarks and checkpoints.
+- **Spark UI**: http://localhost:4040/StreamingQuery/, the five Structured Streaming queries.
+- **Kafka UI**: http://localhost:8080, messages and each consumer group's lag.
+- **ClickHouse**: http://localhost:8123/play, e.g.
+  `SELECT engine, window_start, wiki, edits FROM wikimedia.edits_per_minute FINAL ORDER BY window_start DESC LIMIT 20`.
+- **Lakekeeper UI**: `flink_stream_gold` and `spark_stream_gold`.
+
+When this was built, the live feed gave about 125k events in the first 2½ minutes. Flink and Spark
+agreed on every shared window (0 differences over 4,692 (window, wiki) rows).
+
+## Where to look afterwards (batch)
 
 - **Lakekeeper UI** — http://localhost:8181/ui → `lakehouse` → `manual_silver.trips` snapshots.
 - **SeaweedFS filer** — http://localhost:8888/buckets/ to compare each format's file layout.
@@ -135,7 +170,9 @@ On an M5 Pro a month takes ~4s end to end in DuckDB and ~25–30s in Spark.
 ## Tests
 
 - `make test` — unit tests on the host (pipeline logic runs on a local DuckLake).
-- `make test-integration` — against the running stack, inside the `runner` container.
+- `make test-integration` — against the running stack, inside the `runner` container. The
+  batch tests need `make up-batch` (and `make batch` for the ClickHouse gold tests); the streaming
+  tests need `make up-stream` + `make stream-spark`. Both stacks fit in Docker together (~26 GB peak).
 
 ## Lessons recorded along the way
 
@@ -150,3 +187,16 @@ On an M5 Pro a month takes ~4s end to end in DuckDB and ~25–30s in Spark.
   but has no `MERGE` and no `TRUNCATE` for lake tables; DuckDB writes Iceberg fully but only reads
   Delta (see the matrix).
 - SeaweedFS needs headroom (2 GB + `GOMEMLIMIT`) under parallel Spark I/O or it gets OOM-killed.
+- Streaming connector "jar hell" is real. Flink's Delta connector needed four extra or excluded
+  jars, a Hadoop `core-site.xml` instead of table options, a per-bucket path-style override, and
+  microsecond timestamps to dodge a bug (all in `docker/flink/README.md`).
+- Replacing Flink's `config.yaml` silently drops its Java 17 module flags, and every checkpoint
+  then fails. Iceberg and Delta only commit on checkpoints, so nothing reached the tables.
+- Flink's watermark is the **minimum** across Kafka partitions. A quiet partition holds every
+  window open unless the source marks it idle (`scan.watermark.idle-timeout`). Spark's single
+  global watermark doesn't have that problem.
+- Flink-written Delta tables use the `v2Checkpoint` feature: DuckDB, ClickHouse and Spark read
+  them, delta-rs (`deltalake`) can't yet.
+- Spark Connect keeps a disconnected session's streaming queries running, so the client stops
+  its queries on SIGTERM.
+- The Flink image's Python is 3.10, so code that runs inside it is compiled with 3.10 in a test.
