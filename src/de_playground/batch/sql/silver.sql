@@ -33,7 +33,16 @@ keyed AS (
     FROM clean
 ),
 ranked AS (
-    SELECT *, row_number() OVER (PARTITION BY trip_id ORDER BY ingested_at) AS rn
+    -- Rows sharing a trip_id can differ in columns outside the key (payment, fare split...).
+    -- Order by every one of them so the same row wins in every engine and on every re-run.
+    SELECT *, row_number() OVER (
+        PARTITION BY trip_id
+        ORDER BY payment_type NULLS LAST, fare_amount NULLS LAST, tip_amount NULLS LAST,
+                 passenger_count NULLS LAST, ratecode_id NULLS LAST, store_and_fwd_flag NULLS LAST,
+                 extra NULLS LAST, mta_tax NULLS LAST, tolls_amount NULLS LAST,
+                 improvement_surcharge NULLS LAST, congestion_surcharge NULLS LAST,
+                 airport_fee NULLS LAST, cbd_congestion_fee NULLS LAST
+    ) AS rn
     FROM keyed
 )
 SELECT

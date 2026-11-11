@@ -33,6 +33,8 @@ def cleaning_rows() -> list[dict]:
         trip_row(datetime(2009, 1, 1)),
         trip_row(t),
         trip_row(t),  # duplicate
+        trip_row(t, payment_type=2, tip_amount=0.0),  # near-duplicates: same trip_id, other values;
+        trip_row(t, fare_amount=19.0, tip_amount=5.0),  # every engine must keep the same one
         trip_row(t, PULocationID=999),  # unknown zone -> NULL borough
         *sample_rows(JAN),
     ]
@@ -93,19 +95,23 @@ def duck_target(settings):
 
 def test_spark_pipeline_layer_counts(spark, spark_target, raw):
     counts = run_month(spark, spark_target, JAN, raw[1])
-    # 15 raw rows; silver keeps sample_rows (5) + one of the duplicates + the unknown-zone trip.
-    assert counts["bronze"] == 15
+    # 17 raw rows; silver keeps sample_rows (5) + one of the (near-)duplicates + the unknown-zone trip.
+    assert counts["bronze"] == 17
     assert counts["silver"] == 7
 
 
 def test_spark_rerun_month_is_idempotent(spark, spark_target, raw):
+    def snapshot():
+        snap = {s.name: spark.query(f"SELECT count(*) FROM {table_ref(spark_target, s.layer, s.name)}")
+                for s in SCHEMAS.values()}
+        for table in ["trips", *GOLD]:  # values too, not just counts
+            snap[f"{table}_rows"] = _rows(spark, spark_target, table)
+        return snap
+
     run_month(spark, spark_target, JAN, raw[1])
-    before = {s.name: spark.query(f"SELECT count(*) FROM {table_ref(spark_target, s.layer, s.name)}")
-              for s in SCHEMAS.values()}
+    before = snapshot()
     run_month(spark, spark_target, JAN, raw[1])
-    after = {s.name: spark.query(f"SELECT count(*) FROM {table_ref(spark_target, s.layer, s.name)}")
-             for s in SCHEMAS.values()}
-    assert after == before
+    assert snapshot() == before
 
 
 def _rows(engine, target: Target, table: str) -> list[tuple]:
@@ -132,6 +138,29 @@ def test_spark_gold_matches_duckdb_gold(spark, spark_target, duck_target, raw):
         for d, s in zip(d_rows, s_rows):
             assert all(_same(x, y) for x, y in zip(d, s)), (table, d, s)
 
+    d_silver, s_silver = _rows(duck, dtarget, "trips"), _rows(spark, spark_target, "trips")
+    winners = lambda rows: {(r[0], r[16], r[17]) for r in rows}  # trip_id, payment_type, fare_amount
+    assert winners(d_silver) == winners(s_silver)
+
     d_ids = {r[0] for r in duck.query(f"SELECT trip_id FROM {table_ref(dtarget, 'silver', 'trips')}")}
     s_ids = {r[0] for r in spark.query(f"SELECT trip_id FROM {table_ref(spark_target, 'silver', 'trips')}")}
     assert d_ids == s_ids
+
+
+def test_spark_rerun_with_fewer_rows_removes_stale_rows(spark, spark_target, settings, tmp_path):
+    client = storage.s3_client(settings)
+    prefix = f"fixtures/{uuid.uuid4().hex[:8]}"
+    zones = write_zones_csv(tmp_path / "zones.csv")
+    client.upload_file(str(zones), "raw", f"{prefix}/zones.csv")
+    rows = sample_rows(JAN)
+    for name, subset in (("full", rows), ("fewer", rows[:-1])):
+        path = write_trips_parquet(tmp_path / f"{name}.parquet", subset)
+        client.upload_file(str(path), "raw", f"{prefix}/{name}.parquet")
+
+    run_month(spark, spark_target, JAN, RawSources(f"s3a://raw/{prefix}/full.parquet", f"s3a://raw/{prefix}/zones.csv"))
+    run_month(spark, spark_target, JAN, RawSources(f"s3a://raw/{prefix}/fewer.parquet", f"s3a://raw/{prefix}/zones.csv"))
+
+    gold = table_ref(spark_target, "gold", "daily_zone_stats")
+    assert spark.query(f"SELECT count(*) FROM {table_ref(spark_target, 'silver', 'trips')}") == [(4,)]
+    assert spark.query(f"SELECT count(*) FROM {gold} WHERE pu_location_id = 237") == [(0,)]
+    assert spark.query(f"SELECT sum(trips) FROM {table_ref(spark_target, 'gold', 'payment_tip_stats')}") == [(4,)]

@@ -11,21 +11,22 @@ from importlib import resources
 
 from de_playground.batch.columns import bronze_select_list, sql_type
 from de_playground.batch.engines import Dialect, SqlEngine
-from de_playground.batch.schemas import SCHEMAS, ddl_statements, merge_sql
+from de_playground.batch.schemas import SCHEMAS, ddl_statements, merge_statements
 from de_playground.batch.target import LAYERS, Layer, Target, table_ref
 from de_playground.months import Month
 from de_playground.sources import tlc
 
 _EPOCH_US = {"duckdb": "epoch_us", "spark": "unix_micros"}
 
-# Temp view produced by each layer's template -> table it is merged into.
-_MERGES: dict[str, list[tuple[str, str]]] = {
+# Per layer: (table, temp view the layer's template produces, the month's slice of that table).
+_MONTH_DAYS = "t.pickup_date >= DATE '{month_start}' AND t.pickup_date < DATE '{next_month_start}'"
+_MERGES: dict[str, list[tuple[str, str, str]]] = {
     "bronze": [],
-    "silver": [("trips", "silver_batch")],
+    "silver": [("trips", "silver_batch", "t.pickup_month = '{month}'")],
     "gold": [
-        ("daily_zone_stats", "gold_daily_zone_batch"),
-        ("hourly_borough_demand", "gold_hourly_borough_batch"),
-        ("payment_tip_stats", "gold_payment_tip_batch"),
+        ("daily_zone_stats", "gold_daily_zone_batch", _MONTH_DAYS),
+        ("hourly_borough_demand", "gold_hourly_borough_batch", _MONTH_DAYS),
+        ("payment_tip_stats", "gold_payment_tip_batch", "t.pickup_month = DATE '{month_start}'"),
     ],
 }
 
@@ -59,8 +60,9 @@ def run_layer(engine: SqlEngine, target: Target, layer: Layer, month: Month, sou
 
     context = _context(engine.dialect, target, month, sources)
     engine.execute(_template(layer).format(**context))
-    for table, view in _MERGES[layer]:
-        engine.execute(merge_sql(target, table, engine.stage(view)))
+    for table, view, scope in _MERGES[layer]:
+        for statement in merge_statements(target, table, engine.stage(view), scope.format(**context)):
+            engine.execute(statement)
     return _month_count(engine, layer, context)
 
 

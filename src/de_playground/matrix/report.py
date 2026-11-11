@@ -40,6 +40,9 @@ def render_markdown(results: list[ProbeResult], run_date: date) -> str:
     na = {(r.engine, r.format): r.detail for r in results if r.status == "n/a"}
     parts.append("## Notes\n")
     parts.append("\n".join(f"- **{r.engine} / {r.format} / {r.op}**: {r.detail}" for r in notes) or "No failures.")
+    caveats = [r for r in results if r.status == "ok" and r.detail]
+    if caveats:
+        parts.append("\n\nCaveats:\n\n" + "\n".join(f"- {r.engine} / {r.format} / {r.op}: {r.detail}" for r in caveats))
     if na:
         parts.append("\n\nNot applicable:\n\n" + "\n".join(f"- {e} / {f}: {d}" for (e, f), d in na.items()))
     return "\n".join(parts) + "\n"

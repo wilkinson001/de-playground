@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 
@@ -140,3 +141,39 @@ def test_months_accumulate(engine, load):
     assert engine.query(
         "SELECT * FROM t_gold.daily_zone_stats WHERE pickup_date < DATE '2025-02-01' ORDER BY ALL"
     ) == jan_gold
+
+
+def test_silver_dedup_tie_break_is_deterministic(engine, load):
+    # Same trip_id (vendor, times, zones, distance, total) but different payment details:
+    # the lowest payment_type, then lowest fare, wins, whatever order the rows arrive in.
+    t = datetime(2025, 1, 10, 9, 0)
+    rows = [
+        trip_row(t, payment_type=2, fare_amount=21.0, tip_amount=3.0),
+        trip_row(t, payment_type=1, fare_amount=22.0, tip_amount=2.0),
+        trip_row(t, payment_type=1, fare_amount=20.0, tip_amount=4.0),
+    ]
+    load(JAN, rows)
+    assert engine.query("SELECT payment_type, fare_amount FROM t_silver.trips") == [(1, Decimal("20.00"))]
+
+
+def test_rerun_with_fewer_rows_removes_stale_silver_and_gold(engine, load):
+    rows = sample_rows(JAN)
+    load(JAN, rows)
+    assert count(engine, "t_silver.trips") == 5
+    zone_237_day = "pu_location_id = 237"
+    assert count(engine, "t_gold.daily_zone_stats", zone_237_day) == 1
+
+    load(JAN, rows[:-1])  # the month is republished without the zone-237 trip
+    assert count(engine, "t_silver.trips") == 4
+    assert count(engine, "t_gold.daily_zone_stats", zone_237_day) == 0
+    assert engine.query("SELECT sum(trips) FROM t_gold.hourly_borough_demand") == [(4,)]
+    assert engine.query("SELECT sum(trips) FROM t_gold.payment_tip_stats") == [(4,)]
+
+
+def test_rerun_of_one_month_leaves_other_months_alone(engine, load):
+    load(JAN, sample_rows(JAN))
+    load(FEB, sample_rows(FEB))
+    load(FEB, sample_rows(FEB)[:2])
+    assert count(engine, "t_silver.trips", "pickup_month = '2025-01'") == 5
+    assert count(engine, "t_silver.trips", "pickup_month = '2025-02'") == 2
+    assert count(engine, "t_gold.daily_zone_stats", "pickup_date < DATE '2025-02-01'") == 5

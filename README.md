@@ -36,13 +36,15 @@ SQL lives in `src/de_playground/batch/sql/`; table schemas in `batch/schemas.py`
 
 ```bash
 cp .env.example .env        # local-only credentials
-make up-batch               # core + Spark + ClickHouse (≈19 GB Docker memory at most)
+make up-batch               # core + Spark + ClickHouse (≈19 GB Docker memory at most; ports on 127.0.0.1)
 make bootstrap              # buckets, Lakekeeper warehouse, ClickHouse databases (safe to re-run)
+# (make batch also refreshes the ClickHouse Delta views once the gold tables exist)
 make batch                  # download Jan–Mar 2025, run all three targets
 ```
 
-Useful variations: `make batch TARGET=spark:delta MONTHS=2025-02` (re-running a month is
-idempotent), `make batch NS=dev` (write to a separate `dev_*` namespace), `make help`.
+Useful variations: `make batch TARGET=spark:delta MONTHS=2025-02` (re-running a month makes
+silver and gold for that month match its current input and SQL — rows no longer produced are
+deleted), `make batch NS=dev` (write to a separate `dev_*` namespace), `make help`.
 
 Reference row counts for Jan–Mar 2025 (identical in all three formats):
 
@@ -74,4 +76,9 @@ On an M5 Pro a month takes ~4s end to end in DuckDB and ~25–30s in Spark.
 - Don't `DROP TABLE … PURGE` Iceberg tables in Lakekeeper — it races Lakekeeper's own purge (`docker/spark`).
 - In-memory DuckDB can't spill unless given a `temp_directory`, and a `MERGE` whose source is a
   window-heavy view can't spill at all — the pipeline stages sources into temp tables first.
+- DuckLake's `MERGE` allows only one UPDATE/DELETE action, so on DuckLake the "delete rows the
+  month no longer produces" step is a separate `DELETE` in the same transaction; Iceberg and Delta
+  do it in one `MERGE … WHEN NOT MATCHED BY SOURCE`.
+- ClickHouse can create (path-based) and append to Iceberg/Delta tables but has no `MERGE` and no
+  `TRUNCATE` for lake tables; DuckDB writes Iceberg fully but Delta only reads (see the matrix).
 - SeaweedFS needs headroom (2 GB + `GOMEMLIMIT`) under parallel Spark I/O or it gets OOM-killed.

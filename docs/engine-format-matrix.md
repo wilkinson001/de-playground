@@ -26,7 +26,7 @@ Operations, on a 2-column table in namespace `matrix`:
 | duckdb | ✅ | ✅ | ✅ | ✅ | ✅ |
 | spark | ✅ | ✅ | ✅ | ✅ | ✅ |
 | python | ✅ | ✅ | ✅ | ✅ | ✅ |
-| clickhouse | ❌ | ❌ | ❌ | ❌ | ✅ |
+| clickhouse | ✅ | ✅ | ❌ | ❌ | ✅ |
 
 ## Delta Lake
 
@@ -35,21 +35,25 @@ Operations, on a 2-column table in namespace `matrix`:
 | duckdb | ❌ | ❌ | ❌ | ❌ | ✅ |
 | spark | ✅ | ✅ | ✅ | ✅ | ✅ |
 | python | ✅ | ✅ | ✅ | ✅ | ✅ |
-| clickhouse | ✅ | ❌ | ❌ | ❌ | ✅ |
+| clickhouse | ❌ | ✅ | ❌ | ❌ | ✅ |
 
 ## Notes
 
-- **duckdb / delta / create**: Catalog Error: Copy Function with name delta does not exist!
-- **duckdb / delta / append**: skipped: create failed
-- **duckdb / delta / overwrite**: skipped: create failed
-- **duckdb / delta / merge**: skipped: create failed
-- **clickhouse / iceberg / create**: Received ClickHouse exception, code: 79, server response: Code: 79. DB::Exception: MergeTree storages require data path. (INCORRECT_FILE_NAME) (for url http://clickhouse:8123)
-- **clickhouse / iceberg / append**: skipped: create failed
-- **clickhouse / iceberg / overwrite**: skipped: create failed
-- **clickhouse / iceberg / merge**: skipped: create failed
-- **clickhouse / delta / append**: Received ClickHouse exception, code: 742, server response: Code: 742. DB::Exception: Received DeltaLake kernel error GenericError: Generic delta kernel error: No files in log segment (in snapshot_builder_build): While executing WaitForAsyncInsert. (DELTA_KERNEL_ERROR) (for url http://clickhouse:8123
-- **clickhouse / delta / overwrite**: Received ClickHouse exception, code: 48, server response: Code: 48. DB::Exception: Truncate is not supported for data lake engine. (NOT_IMPLEMENTED) (for url http://clickhouse:8123)
-- **clickhouse / delta / merge**: Received ClickHouse exception, code: 62, server response: Code: 62. DB::Exception: Syntax error: failed at position 1 (MERGE): MERGE INTO default.matrix_delta_t t USING (SELECT 10 AS id, 'y' AS v) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, v)... Expected 
+- **duckdb / delta / create**: IO Error: DeltaKernel GenericError (5): Generic delta kernel error: No files in log segment
+- **duckdb / delta / append**: Invalid Input Error: Cannot execute statement of type "INSERT" on database "delta_duckdb_writable" which is attached in read-only mode! (on a table created by Spark (this engine couldn't create one))
+- **duckdb / delta / overwrite**: Binder Error: Can only delete from base table (on a table created by Spark (this engine couldn't create one))
+- **duckdb / delta / merge**: Binder Error: Can only merge into base tables! (on a table created by Spark (this engine couldn't create one))
+- **clickhouse / iceberg / overwrite**: Received ClickHouse exception, code: 48, server response: Code: 48. DB::Exception: Truncate is not supported for data lake engine. (NOT_IMPLEMENTED) (for url http://clickhouse:8123)
+- **clickhouse / iceberg / merge**: Received ClickHouse exception, code: 62, server response: Code: 62. DB::Exception: Syntax error: failed at position 1 (MERGE): MERGE INTO default.matrix_iceberg_t t USING (SELECT 10 AS id, 'y' AS v) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, ... Expected 
+- **clickhouse / delta / create**: Received ClickHouse exception, code: 742, server response: Code: 742. DB::Exception: Received DeltaLake kernel error GenericError: Generic delta kernel error: No files in log segment (in snapshot_builder_build). (DELTA_KERNEL_ERROR) (for url http://clickhouse:8123)
+- **clickhouse / delta / overwrite**: Received ClickHouse exception, code: 48, server response: Code: 48. DB::Exception: Truncate is not supported for data lake engine. (NOT_IMPLEMENTED) (for url http://clickhouse:8123) (on a table created by Spark (this engine couldn't create one))
+- **clickhouse / delta / merge**: Received ClickHouse exception, code: 62, server response: Code: 62. DB::Exception: Syntax error: failed at position 1 (MERGE): MERGE INTO default.matrix_delta_t t USING (SELECT 10 AS id, 'y' AS v) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v WHEN NOT MATCHED THEN INSERT (id, v)... Expected  (on a table created by Spark (this engine couldn't create one))
+
+
+Caveats:
+
+- clickhouse / iceberg / create: path-based (IcebergS3 engine); not registered in the Lakekeeper catalog
+- clickhouse / delta / append: on a table created by Spark (this engine couldn't create one)
 
 
 Not applicable:

@@ -27,3 +27,10 @@ def test_render_markdown():
     assert "- **clickhouse / delta / append**: Code: 48. Not implemented" in md
     assert "**spark / ducklake" not in md  # n/a reasons are not listed as failures
     assert "- spark / ducklake: no connector" in md
+
+
+def test_ok_results_with_a_caveat_are_listed():
+    results = [ProbeResult("clickhouse", "iceberg", "append", "ok", "on a table created by Spark")]
+    md = render_markdown(results, date(2026, 11, 11))
+    assert "| clickhouse |   | ✅ |" in md
+    assert "Caveats:\n\n- clickhouse / iceberg / append: on a table created by Spark" in md

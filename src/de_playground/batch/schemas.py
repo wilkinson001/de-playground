@@ -67,9 +67,7 @@ SCHEMAS: dict[str, TableSchema] = {
                 ("airport_fee", "DECIMAL(10,2)"),
                 ("cbd_congestion_fee", "DECIMAL(10,2)"),
             ],
-            # pickup_month is implied by trip_id, but having the partition column in the MERGE key
-            # lets Iceberg/Delta prune the merge to one month's files.
-            keys=["pickup_month", "trip_id"],
+            keys=["trip_id"],
             partition_by="pickup_month",
         ),
         TableSchema(
@@ -139,19 +137,31 @@ def ddl_statements(target: Target) -> list[str]:
     return statements
 
 
-def merge_sql(target: Target, table: str, source_view: str) -> str:
-    """Upsert `source_view` into a keyed table: update every column when matched, insert when not."""
+def merge_statements(target: Target, table: str, source_view: str, scope: str) -> list[str]:
+    """Make the month's slice of a keyed table equal `source_view`.
+
+    Matched rows are updated, new rows inserted, and rows inside `scope` (a predicate on the target
+    alias `t`, e.g. this month's partition) that the source no longer produces are deleted, so
+    re-running a month after its input or the SQL changed leaves no stale rows behind.
+    """
     schema = SCHEMAS[table]
     ref = table_ref(target, schema.layer, table)
     # Null-safe key match: e.g. trips from an unknown zone have a NULL borough, and a plain `=`
     # would never match them, so re-running a month would insert them again.
-    on = " AND ".join(f"t.{k} IS NOT DISTINCT FROM s.{k}" for k in schema.keys)
+    keys = " AND ".join(f"t.{k} IS NOT DISTINCT FROM s.{k}" for k in schema.keys)
     non_keys = [c for c in schema.column_names if c not in schema.keys]
     sets = ", ".join(f"{c} = s.{c}" for c in non_keys)
     cols = ", ".join(schema.column_names)
     vals = ", ".join(f"s.{c}" for c in schema.column_names)
-    return (
-        f"MERGE INTO {ref} t USING {source_view} s ON {on} "
+    # The scope also goes in ON as a literal so Iceberg/Delta can prune the target to one month.
+    merge = (
+        f"MERGE INTO {ref} t USING {source_view} s ON ({scope}) AND {keys} "
         f"WHEN MATCHED THEN UPDATE SET {sets} "
         f"WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({vals})"
     )
+    if target.format == "ducklake":
+        # DuckLake's MERGE allows only one UPDATE/DELETE action, so the stale-row delete is a
+        # separate statement in the same transaction.
+        delete = f"DELETE FROM {ref} t WHERE ({scope}) AND NOT EXISTS (SELECT 1 FROM {source_view} s WHERE {keys})"
+        return ["BEGIN TRANSACTION", delete, merge, "COMMIT"]
+    return [merge + f" WHEN NOT MATCHED BY SOURCE AND ({scope}) THEN DELETE"]

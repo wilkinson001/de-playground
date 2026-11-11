@@ -13,3 +13,10 @@ def test_matrix_smoke(settings):
         for op in ("create", "append", "overwrite", "merge", "read"):
             r = by[(engine, fmt, op)]
             assert r.status == "ok", r
+
+
+def test_matrix_is_rerunnable(settings):
+    # Run twice: no probe may fail just because a previous run left its table behind.
+    run_all(settings)
+    leftovers = [r for r in run_all(settings) if "already exists" in r.detail.lower()]
+    assert leftovers == []

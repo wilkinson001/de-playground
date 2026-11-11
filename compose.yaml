@@ -1,4 +1,5 @@
-# Data engineering playground. Services are grouped into profiles so each exercise
+# Data engineering playground. All ports bind to 127.0.0.1 only: several services have no auth.
+# Services are grouped into profiles so each exercise
 # starts only what it needs:  core | spark | clickhouse | tools
 name: de-playground
 
@@ -12,12 +13,14 @@ services:
     <<: *secrets
     environment:
       POSTGRES_DB: postgres
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      # Over TCP and against the last database init creates: during first-boot init the image runs
+      # a socket-only temporary server, which a plain pg_isready would wrongly report as ready.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d dagster"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -30,9 +33,9 @@ services:
     <<: *secrets
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     ports:
-      - "8333:8333" # S3 gateway
-      - "8888:8888" # filer UI
-      - "9333:9333" # master UI
+      - "127.0.0.1:8333:8333" # S3 gateway
+      - "127.0.0.1:8888:8888" # filer UI
+      - "127.0.0.1:9333:9333" # master UI
     volumes:
       - seaweeddata:/data
       - ./docker/seaweedfs/entrypoint.sh:/entrypoint.sh:ro
@@ -66,7 +69,7 @@ services:
     image: *lakekeeper-image
     environment: *lakekeeper-env
     command: ["serve"]
-    ports: ["8181:8181"] # REST catalog at /catalog, UI at /ui
+    ports: ["127.0.0.1:8181:8181"] # REST catalog at /catalog, UI at /ui
     healthcheck:
       test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 3s
@@ -85,8 +88,8 @@ services:
     image: de-playground/spark-connect:4.0.1
     <<: *secrets
     ports:
-      - "15002:15002" # Spark Connect (sc://localhost:15002)
-      - "4040:4040"   # Spark UI
+      - "127.0.0.1:15002:15002" # Spark Connect (sc://localhost:15002)
+      - "127.0.0.1:4040:4040"   # Spark UI
     depends_on:
       lakekeeper: {condition: service_healthy}
       seaweedfs: {condition: service_healthy}
@@ -106,8 +109,8 @@ services:
       # Local playground: the passwordless `default` user may connect from the Compose network.
       CLICKHOUSE_SKIP_USER_SETUP: "1"
     ports:
-      - "8123:8123" # HTTP (and the built-in web SQL UI at /play)
-      - "9000:9000" # native protocol
+      - "127.0.0.1:8123:8123" # HTTP (and the built-in web SQL UI at /play)
+      - "127.0.0.1:9000:9000" # native protocol
     volumes:
       - clickhousedata:/var/lib/clickhouse
       - ./docker/clickhouse/config.d/playground.xml:/etc/clickhouse-server/config.d/playground.xml:ro

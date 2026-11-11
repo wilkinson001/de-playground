@@ -14,6 +14,7 @@ from typing import Literal
 
 import pyarrow as pa
 
+from de_playground import storage
 from de_playground.config import Settings
 
 Op = Literal["create", "append", "overwrite", "merge", "read"]
@@ -67,38 +68,55 @@ class DuckDBAdapter:
         except Exception as e:  # recorded against every Iceberg op
             self.iceberg_error = f"ATTACH failed: {_first_line(e)}"
 
+        self.table = {"ducklake": "duckdb_t", "iceberg": "duckdb_t", "delta": "duckdb_t"}
+
     def unsupported(self, fmt: str) -> str | None:
         return None
 
-    def _ref(self, fmt: str, table: str = "duckdb_t") -> str:
-        if fmt == "iceberg" and self.iceberg_error:
-            raise RuntimeError(self.iceberg_error)
-        return {"ducklake": f"lake.matrix.{table}", "iceberg": f"ice.matrix.{table}"}.get(fmt, "")
+    def use_spark_table(self, fmt: str) -> None:
+        self.table[fmt] = "duckdb_writable"
+
+    def _ref(self, fmt: str, table: str | None = None) -> str:
+        table = table or self.table[fmt]
+        if fmt == "ducklake":
+            return f"lake.matrix.{table}"
+        if fmt == "iceberg":
+            if self.iceberg_error:
+                raise RuntimeError(self.iceberg_error)
+            return f"ice.matrix.{table}"
+        # Delta: the delta extension attaches one table (by path) as a database alias.
+        alias = f"delta_{table}"
+        if not self.engine.query(f"SELECT 1 FROM duckdb_databases() WHERE database_name = '{alias}'"):
+            self.engine.execute(f"ATTACH 's3://delta/matrix/{table}' AS {alias} (TYPE delta)")
+        return alias
 
     def create(self, fmt: str) -> None:
         if fmt == "delta":
-            # The delta extension has no CREATE; try writing a new table with COPY.
-            self.engine.execute("COPY (SELECT 1::INTEGER AS id, 'a' AS v) TO 's3://delta/matrix/duckdb_t' (FORMAT delta)")
+            # No CREATE TABLE for Delta: attaching a fresh path is the only way to start one.
+            self._ref(fmt)
             return
         ref = self._ref(fmt)
         self.engine.execute(f"CREATE SCHEMA IF NOT EXISTS {ref.rsplit('.', 1)[0]}")
         self.engine.execute(f"DROP TABLE IF EXISTS {ref}")
         self.engine.execute(f"CREATE TABLE {ref} (id INTEGER, v VARCHAR)")
 
+    def count(self, fmt: str) -> int:
+        return self.engine.query(f"SELECT count(*) FROM {self._ref(fmt)}")[0][0]
+
     def append(self, fmt: str) -> None:
-        self.engine.execute(f"INSERT INTO {self._ref(fmt) or 'delta_scan(\'s3://delta/matrix/duckdb_t\')'} VALUES (1, 'a'), (2, 'b')")
+        self.engine.execute(f"INSERT INTO {self._ref(fmt)} VALUES (1, 'a'), (2, 'b')")
 
     def overwrite(self, fmt: str) -> None:
-        ref = self._ref(fmt) or "delta_scan('s3://delta/matrix/duckdb_t')"
+        ref = self._ref(fmt)
         self.engine.execute(f"BEGIN; DELETE FROM {ref}; INSERT INTO {ref} VALUES (10, 'x'); COMMIT")
 
     def merge(self, fmt: str) -> None:
-        ref = self._ref(fmt) or "delta_scan('s3://delta/matrix/duckdb_t')"
-        self.engine.execute(f"MERGE INTO {ref} t USING (SELECT 10 AS id, 'y' AS v UNION ALL SELECT 11, 'z') {_MERGE_TAIL}")
+        self.engine.execute(
+            f"MERGE INTO {self._ref(fmt)} t USING (SELECT 10 AS id, 'y' AS v UNION ALL SELECT 11, 'z') {_MERGE_TAIL}"
+        )
 
     def read(self, fmt: str) -> int:
-        ref = self._ref(fmt, "seed") or "delta_scan('s3://delta/matrix/seed')"
-        return self.engine.query(f"SELECT count(*) FROM {ref}")[0][0]
+        return self.engine.query(f"SELECT count(*) FROM {self._ref(fmt, 'seed')}")[0][0]
 
     def close(self) -> None:
         try:  # a failed BEGIN..COMMIT can leave a transaction open
@@ -143,13 +161,23 @@ class SparkAdapter:
     def read(self, fmt: str) -> int:
         return self.engine.query(f"SELECT count(*) FROM {self.ref(fmt, 'seed')}")[0][0]
 
+    def count(self, fmt: str) -> int:
+        return self.engine.query(f"SELECT count(*) FROM {self.ref(fmt)}")[0][0]
+
+    def use_spark_table(self, fmt: str) -> None:
+        pass  # Spark is the engine that creates the fallback tables
+
     def write_seeds(self) -> None:
+        """Seed tables every engine reads, plus an empty `<engine>_writable` table per engine so an
+        engine that can't create tables can still have its writes probed."""
         self.engine.execute("CREATE NAMESPACE IF NOT EXISTS iceberg.matrix")
         for fmt in ("iceberg", "delta"):
             self.engine.execute(
                 f"CREATE OR REPLACE TABLE {self.ref(fmt, 'seed')} USING {fmt} AS "
                 "SELECT * FROM VALUES (1, 'a'), (2, 'b'), (3, 'c') AS s(id, v)"
             )
+            for engine in ("duckdb", "python", "clickhouse"):
+                self.engine.execute(f"CREATE OR REPLACE TABLE {self.ref(fmt, f'{engine}_writable')} (id INT, v STRING) USING {fmt}")
 
 
 class PythonAdapter:
@@ -187,7 +215,21 @@ class PythonAdapter:
             return "DuckLake is used from Python through DuckDB (see the duckdb row)"
         return None
 
-    _URI = "s3://delta/matrix/python_t"
+    table = "python_t"
+
+    @property
+    def _URI(self) -> str:
+        return f"s3://delta/matrix/{self.table}"
+
+    def use_spark_table(self, fmt: str) -> None:
+        self.table = "python_writable"
+
+    def count(self, fmt: str) -> int:
+        if fmt == "delta":
+            from deltalake import DeltaTable
+
+            return DeltaTable(self._URI, storage_options=self.storage_options).to_pyarrow_table().num_rows
+        return self.catalog.load_table(f"matrix.{self.table}").scan().to_arrow().num_rows
 
     def create(self, fmt: str) -> None:
         if fmt == "delta":
@@ -216,7 +258,7 @@ class PythonAdapter:
             else:
                 write_deltalake(self._URI, data, mode=mode, storage_options=self.storage_options)
         else:
-            table = self.catalog.load_table("matrix.python_t")
+            table = self.catalog.load_table(f"matrix.{self.table}")
             {"append": table.append, "overwrite": table.overwrite}.get(mode, lambda d: table.upsert(d, join_cols=["id"]))(data)
 
     def append(self, fmt: str) -> None:
@@ -252,27 +294,52 @@ class ClickHouseAdapter:
         )
         known = {r[0] for r in self.client.query("SELECT name FROM system.settings").result_rows}
         self.settings = {s: 1 for s in self._WANTED_SETTINGS if s in known}
-        self.delta_url = f"{clickhouse_setup.S3_INTERNAL}/delta/matrix"
+        self.s3 = clickhouse_setup.S3_INTERNAL
+        self.s3_client = storage.s3_client(settings)
+        self.iceberg_on_spark_table = False
 
     def unsupported(self, fmt: str) -> str | None:
         if fmt == "ducklake":
             return "ClickHouse has no DuckLake support"
         return None
 
+    # Shown next to a ✅ so the cell isn't over-read.
+    caveats = {("iceberg", "create"): "path-based (IcebergS3 engine); not registered in the Lakekeeper catalog"}
+
     def _cmd(self, sql: str) -> None:
         self.client.command(sql, settings=self.settings)
 
     def _ref(self, fmt: str) -> str:
-        return "iceberg_lake.`matrix.clickhouse_t`" if fmt == "iceberg" else "default.matrix_delta_t"
+        if fmt == "iceberg" and self.iceberg_on_spark_table:
+            # Spark-created Iceberg tables live in Lakekeeper: reach them through the catalog database.
+            return "iceberg_lake.`matrix.clickhouse_writable`"
+        return f"default.matrix_{fmt}_t"
+
+    def _create_over(self, fmt: str, path: str) -> None:
+        # A ClickHouse table whose storage is a lake table at `path` (outside the Lakekeeper catalog).
+        engine = "IcebergS3" if fmt == "iceberg" else "DeltaLake"
+        bucket = "iceberg" if fmt == "iceberg" else "delta"
+        self._cmd(
+            f"CREATE OR REPLACE TABLE {self._ref(fmt)} (id Int32, v String) "
+            f"ENGINE = {engine}(seaweedfs, url = '{self.s3}/{bucket}/{path}/')"
+        )
 
     def create(self, fmt: str) -> None:
+        # Path-based lake tables have no DROP that removes files: clear the previous run's table.
+        bucket = "iceberg" if fmt == "iceberg" else "delta"
+        for page in self.s3_client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="matrix/clickhouse_t/"):
+            for obj in page.get("Contents", []):
+                self.s3_client.delete_object(Bucket=bucket, Key=obj["Key"])
+        self._create_over(fmt, "matrix/clickhouse_t")
+
+    def count(self, fmt: str) -> int:
+        return self.client.query(f"SELECT count() FROM {self._ref(fmt)}", settings=self.settings).result_rows[0][0]
+
+    def use_spark_table(self, fmt: str) -> None:
         if fmt == "iceberg":
-            self._cmd(f"CREATE TABLE {self._ref(fmt)} (id Int32, v String)")
+            self.iceberg_on_spark_table = True
         else:
-            self._cmd(
-                f"CREATE OR REPLACE TABLE {self._ref(fmt)} (id Int32, v String) "
-                f"ENGINE = DeltaLake(seaweedfs, url = '{self.delta_url}/clickhouse_t/')"
-            )
+            self._create_over(fmt, "matrix/clickhouse_writable")
 
     def append(self, fmt: str) -> None:
         self._cmd(f"INSERT INTO {self._ref(fmt)} VALUES (1, 'a'), (2, 'b')")
@@ -288,26 +355,34 @@ class ClickHouseAdapter:
         source = (
             "iceberg_lake.`matrix.seed`"
             if fmt == "iceberg"
-            else f"deltaLake(seaweedfs, url = '{self.delta_url}/seed/')"
+            else f"deltaLake(seaweedfs, url = '{self.s3}/delta/matrix/seed/')"
         )
         return self.client.query(f"SELECT count() FROM {source}").result_rows[0][0]
 
 
-def _probe(adapter, fmt: str, op: Op, create_failed: bool) -> ProbeResult:
+SPARK_TABLE_CAVEAT = "on a table created by Spark (this engine couldn't create one)"
+
+
+def _probe(adapter, fmt: str, op: Op, on_spark_table: bool) -> ProbeResult:
     reason = adapter.unsupported(fmt)
     if reason:
         return ProbeResult(adapter.name, fmt, op, "n/a", reason)
-    if create_failed and op in ("append", "overwrite", "merge"):
-        return ProbeResult(adapter.name, fmt, op, "fail", "skipped: create failed")
     try:
         result = getattr(adapter, op)(fmt)
+        if op == "create":
+            adapter.count(fmt)  # a create only counts if the new table can be queried
         if op == "read" and result != SEED_ROWS:
             return ProbeResult(adapter.name, fmt, op, "fail", f"read {result} rows, expected {SEED_ROWS}")
-        return ProbeResult(adapter.name, fmt, op, "ok", "")
+        detail = SPARK_TABLE_CAVEAT if on_spark_table and op in ("append", "overwrite", "merge") else ""
+        detail = detail or getattr(adapter, "caveats", {}).get((fmt, op), "")
+        return ProbeResult(adapter.name, fmt, op, "ok", detail)
     except Exception as e:
         if hasattr(adapter, "close"):
             adapter.close()
-        return ProbeResult(adapter.name, fmt, op, "fail", _first_line(e))
+        detail = _first_line(e)
+        if on_spark_table and op in ("append", "overwrite", "merge"):
+            detail = f"{detail} ({SPARK_TABLE_CAVEAT})"
+        return ProbeResult(adapter.name, fmt, op, "fail", detail)
 
 
 def run_all(settings: Settings, adapters: dict[str, Callable[[Settings], object]] | None = None) -> list[ProbeResult]:
@@ -333,9 +408,14 @@ def run_all(settings: Settings, adapters: dict[str, Callable[[Settings], object]
         if name not in built:
             continue
         for fmt in FORMATS:
-            create_failed = False
+            on_spark_table = False
             for op in OPS:
-                result = _probe(built[name], fmt, op, create_failed)
-                create_failed = create_failed or (op == "create" and result.status == "fail")
+                result = _probe(built[name], fmt, op, on_spark_table)
+                if op == "create" and result.status == "fail":
+                    try:  # still probe this engine's writes, against a table Spark created for it
+                        built[name].use_spark_table(fmt)
+                        on_spark_table = True
+                    except Exception as e:
+                        result = ProbeResult(name, fmt, op, "fail", f"{result.detail}; fallback: {_first_line(e)}")
                 results.append(result)
     return results
