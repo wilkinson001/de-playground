@@ -1,8 +1,10 @@
 """DuckDB's web UI over everything the playground has written (`make duckdb-ui`).
 
-Runs on the host, not in a container: the UI server only listens on localhost (so a container's
-UI would be unreachable from the browser), and every playground service already publishes its
-port on 127.0.0.1. One persistent DuckDB file keeps the UI's notebooks between runs.
+Runs in Docker (`make duckdb-ui`, the `duckdb-ui` service) or directly on the host
+(`make duckdb-ui-local`). The UI server only listens on the IPv6 loopback, so in Docker a socat
+relay publishes it (see compose.yaml). The UI keeps notebooks in its own state database under
+~/.duckdb/extension_data/ui (mounted from .data/duckdb-ui/ui-state in Docker); DB_FILE is just
+the writable database the UI runs on, which it requires.
 
 Every table format is reachable with the same naming pattern, `<catalog>.<ns>_<layer>.<table>`:
     lake.*     DuckLake (catalog in Postgres, data in SeaweedFS)
@@ -79,7 +81,7 @@ def main() -> None:
     for statement in setup_statements(settings, delta_tables):
         con.execute(statement)
     con.execute("CALL start_ui_server()")
-    print(f"DuckDB UI: {UI_URL}  (catalogs: lake, iceberg, delta with {len(delta_tables)} tables) - Ctrl+C to stop")
+    print(f"DuckDB UI: {UI_URL}  (catalogs: lake, iceberg, delta with {len(delta_tables)} tables) - Ctrl+C to stop", flush=True)
     try:
         threading.Event().wait()
     except KeyboardInterrupt:

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 # Every profile, so the runner (started with --no-deps) can resolve any service it talks to.
-ALL_PROFILES := --profile core --profile spark --profile clickhouse --profile streaming --profile spark-stream
+ALL_PROFILES := --profile core --profile spark --profile clickhouse --profile streaming --profile spark-stream --profile ui
 BATCH_PROFILES := --profile core --profile spark --profile clickhouse
 STREAM_PROFILES := --profile core --profile streaming --profile clickhouse
 RUN := $(COMPOSE) $(ALL_PROFILES) --profile tools run --rm --no-deps runner
@@ -95,10 +95,18 @@ stream-spark-stop: env ## Stop the Spark Structured Streaming queries
 	$(COMPOSE) $(SPARK_STREAM_PROFILES) stop spark-stream
 
 .PHONY: duckdb-ui
-duckdb-ui: env ## DuckDB web UI on the host (http://localhost:4213) over DuckLake, Iceberg and Delta
+duckdb-ui: env ## DuckDB web UI in Docker (http://localhost:4213) over DuckLake, Iceberg and Delta
+	$(COMPOSE) --profile core --profile ui up -d --wait duckdb-ui
+	@echo "DuckDB UI: http://localhost:4213  (make duckdb-ui-stop to stop)"
+
+.PHONY: duckdb-ui-stop duckdb-ui-local
+duckdb-ui-stop: ## Stop the DuckDB UI container
+	$(COMPOSE) --profile core --profile ui stop duckdb-ui
+
+duckdb-ui-local: env ## The same DuckDB UI, run directly on the host instead of in Docker
 	set -a && . ./.env && set +a && uv run python -m de_playground.duckdb_ui
 
-PIPELINE_SERVICES := producer flink-jobmanager flink-taskmanager flink-sql-gateway spark-stream spark-connect kafka-ui kafka clickhouse
+PIPELINE_SERVICES := duckdb-ui producer flink-jobmanager flink-taskmanager flink-sql-gateway spark-stream spark-connect kafka-ui kafka clickhouse
 .PHONY: pipelines-down
 pipelines-down: ## Stop every engine/pipeline service but keep the data lake (postgres, seaweedfs, lakekeeper) up
 	$(COMPOSE) $(ALL_PROFILES) stop $(PIPELINE_SERVICES)

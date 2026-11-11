@@ -1,6 +1,6 @@
 # Data engineering playground. All ports bind to 127.0.0.1 only: several services have no auth.
 # Services are grouped into profiles so each exercise
-# starts only what it needs:  core | spark | clickhouse | streaming | spark-stream | tools
+# starts only what it needs:  core | spark | clickhouse | streaming | spark-stream | ui | tools
 name: de-playground
 
 x-secrets: &secrets
@@ -240,6 +240,36 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s # SIGTERM stops the queries on the Spark Connect server
     mem_limit: 512m
+
+  duckdb-ui:
+    profiles: [ui]
+    image: de-playground/runner:local
+    <<: *secrets
+    environment:
+      # Reach the services by their Compose names (the code defaults to localhost for host runs).
+      PLAYGROUND_S3_ENDPOINT: http://seaweedfs:8333
+      PLAYGROUND_PG_HOST: postgres
+      PLAYGROUND_LAKEKEEPER_URL: http://lakekeeper:8181
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      # The UI keeps notebooks in its own state database under ~/.duckdb/extension_data/ui.
+      - ./.data/duckdb-ui/ui-state:/root/.duckdb/extension_data/ui
+    # The UI server only listens on the container's IPv6 loopback ([::1]:4213); socat relays it on
+    # 4214 so it can be published. Host port 4213 keeps the Host header the UI expects.
+    command: ["sh", "-c", "socat TCP-LISTEN:4214,fork,reuseaddr TCP6:[::1]:4213 & exec uv run python -m de_playground.duckdb_ui"]
+    ports: ["127.0.0.1:4213:4214"] # DuckDB UI
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://[::1]:4213', timeout=3)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      postgres: {condition: service_healthy}
+      seaweedfs: {condition: service_healthy}
+      lakekeeper: {condition: service_healthy}
+    mem_limit: 2g
 
   producer:
     profiles: [streaming]

@@ -171,13 +171,14 @@ agreed on every shared window (0 differences over 4,692 (window, wiki) rows).
 ## Querying everything: the DuckDB UI
 
 ```bash
-make duckdb-ui              # http://localhost:4213 (Ctrl+C to stop)
+make duckdb-ui              # http://localhost:4213, in Docker (make duckdb-ui-stop to stop)
+make duckdb-ui-local        # or the same UI directly on your Mac (Ctrl+C to stop)
 ```
 
-DuckDB's web UI (notebooks, a schema browser, result charts) runs **on your Mac**, not in Docker:
-its server only listens on `localhost`, and every playground service publishes its port on
-`127.0.0.1`. Only the data lake needs to be up (`make up`), not the engines that wrote the data.
-Every table format is under the same naming pattern:
+DuckDB's web UI gives you notebooks, a schema browser and result charts. Only the data lake needs
+to be up (`make up`), not the engines that wrote the data. The UI server only listens on its
+container's IPv6 loopback, so the `duckdb-ui` service runs a small `socat` relay that Compose
+publishes on `127.0.0.1:4213`. Every table format is under the same naming pattern:
 
 | Catalog | What | Example |
 |---|---|---|
@@ -185,8 +186,10 @@ Every table format is under the same naming pattern:
 | `iceberg` | every Iceberg table in Lakekeeper | `iceberg.spark_stream_gold.edits_per_minute` |
 | `delta` | a view per Delta table found in the `delta` bucket (refreshed each start) | `delta.flink_stream_gold.edits_per_minute` |
 
-Notebooks are saved in `.data/duckdb-ui/playground.duckdb` (git-ignored). The UI downloads its
-web assets from `ui.duckdb.org`; your queries and data stay local. Code: `src/de_playground/duckdb_ui.py`.
+Notebooks live in the UI's own state database (`~/.duckdb/extension_data/ui`), which the Docker
+service mounts from `.data/duckdb-ui/ui-state` (git-ignored) so they survive restarts. The UI
+downloads its web assets from `ui.duckdb.org`; your queries and data stay local. Code:
+`src/de_playground/duckdb_ui.py`.
 
 Try comparing the same gold table across all three formats:
 
@@ -198,9 +201,9 @@ UNION ALL SELECT 'delta', count(*) FROM delta.manual_gold.daily_zone_stats;
 
 ## Saving battery
 
-`make pipelines-down` stops every engine (Kafka, producer, Flink, Spark, ClickHouse) and leaves
-only the data lake (Postgres, SeaweedFS, Lakekeeper: ~1.6 GB, idle CPU) running, which is all the
-DuckDB UI needs. `make down` stops everything, keeping the data; `make nuke` also deletes it.
+`make pipelines-down` stops every engine (Kafka, producer, Flink, Spark, ClickHouse) and the
+DuckDB UI, and leaves only the data lake (Postgres, SeaweedFS, Lakekeeper: ~1.6 GB, idle CPU)
+running. `make duckdb-ui` needs nothing more than that. `make down` stops everything, keeping the data; `make nuke` also deletes it.
 
 ## Tests
 

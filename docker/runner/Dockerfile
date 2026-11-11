@@ -14,4 +14,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 # Pre-install DuckDB extensions so pipeline runs never download them.
-RUN /opt/venv/bin/python -c "import duckdb; [duckdb.sql(f'INSTALL {e}') for e in ('ducklake','postgres','httpfs','iceberg','delta','avro')]"
+RUN /opt/venv/bin/python -c "import duckdb; [duckdb.sql(f'INSTALL {e}') for e in ('ducklake','postgres','httpfs','iceberg','delta','avro','ui')]"
+
+# socat relays the DuckDB UI (which only listens on the container's localhost) to the Compose
+# network, so it can be published to the host. Used only by the duckdb-ui service.
+RUN apt-get update && apt-get install -y --no-install-recommends socat && rm -rf /var/lib/apt/lists/*
