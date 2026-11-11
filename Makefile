@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
-RUN := $(COMPOSE) --profile core --profile tools run --rm runner
+PROFILES ?= --profile core --profile spark --profile clickhouse
+RUN := $(COMPOSE) $(PROFILES) --profile tools run --rm --no-deps runner
 
 .PHONY: help env test
 
@@ -16,6 +17,9 @@ test: ## Unit tests (host, no services needed)
 .PHONY: up down nuke ps logs shell test-integration
 up: env ## Start core services (postgres, seaweedfs, lakekeeper)
 	$(COMPOSE) --profile core up -d --wait
+
+up-batch: env ## Start core + Spark + ClickHouse (batch exercises)
+	$(COMPOSE) $(PROFILES) up -d --wait
 
 down: ## Stop all services (keeps data)
 	$(COMPOSE) --profile '*' down

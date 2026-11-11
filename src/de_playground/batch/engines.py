@@ -106,3 +106,35 @@ def connect_ducklake(catalog_uri: str, data_path: str, settings: Settings | None
 def ducklake_engine(settings: Settings) -> DuckDBEngine:
     """DuckLake with its catalog in Postgres and data files in the `ducklake` bucket."""
     return connect_ducklake(settings.ducklake_attach_uri(), "s3://ducklake/", settings)
+
+
+class SparkEngine:
+    """Runs SQL on the Spark Connect server; only a thin gRPC client lives in this process."""
+
+    dialect: Dialect = "spark"
+
+    def __init__(self, spark):  # pyspark.sql.connect.session.SparkSession
+        self.spark = spark
+
+    def execute(self, sql: str) -> None:
+        for statement in split_statements(sql):
+            self.spark.sql(statement).collect()  # collect() forces execution of commands and DML
+
+    def query(self, sql: str) -> list[tuple]:
+        return [tuple(row) for row in self.spark.sql(sql).collect()]
+
+    def parquet_columns(self, uri: str) -> list[str]:
+        return self.spark.read.parquet(uri).columns
+
+    def register_parquet_view(self, name: str, uri: str, select_sql: str) -> None:
+        self.spark.read.parquet(uri).createOrReplaceTempView("src")
+        self.spark.sql(f"CREATE OR REPLACE TEMPORARY VIEW {name} AS {select_sql}").collect()
+
+    def register_csv_view(self, name: str, uri: str) -> None:
+        self.spark.read.option("header", True).option("inferSchema", True).csv(uri).createOrReplaceTempView(name)
+
+
+def spark_engine(settings: Settings) -> SparkEngine:
+    from pyspark.sql import SparkSession
+
+    return SparkEngine(SparkSession.builder.remote(settings.spark_remote).getOrCreate())
