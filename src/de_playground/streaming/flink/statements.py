@@ -5,6 +5,7 @@ Runs inside the Flink containers too, so it imports only the standard library (a
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -68,6 +69,20 @@ def _with(options: dict[str, str]) -> str:
     return ",\n    ".join(f"'{k}' = '{v}'" for k, v in options.items())
 
 
+SAVEPOINT_DIR = "file:///opt/flink/checkpoints/savepoints"
+PLAN_DIR = "file:///opt/flink/checkpoints/plans"
+
+
+def job_settings(cfg: JobConfig) -> dict[str, str]:
+    """Settings for the streaming job, shared by the PyFlink entrypoint and the SQL Gateway path."""
+    return {
+        "pipeline.name": cfg.job_name,
+        "execution.checkpointing.interval": cfg.checkpoint_interval,
+        "table.local-time-zone": "UTC",
+        "table.exec.source.idle-timeout": "10s",
+    }
+
+
 def iceberg_catalog_ddl(lakekeeper_url: str, warehouse: str, s3_endpoint: str, access_key: str, secret_key: str) -> str:
     """Catalog `lakehouse` → the Lakekeeper REST catalog; data files via S3FileIO with static keys."""
     return "CREATE CATALOG lakehouse WITH (\n    " + _with({
@@ -84,7 +99,7 @@ def iceberg_catalog_ddl(lakekeeper_url: str, warehouse: str, s3_endpoint: str, a
     }) + "\n)"
 
 
-def delta_options(path: str, partitions: str | None = None) -> str:
+def delta_options(path: str, partitions: str | None = None, uid: str | None = None) -> str:
     """WITH-clause body for a path-based Delta sink (the connector creates the table on first write).
 
     S3 endpoint and credentials are not table options: the released connector rejects them, so
@@ -93,6 +108,8 @@ def delta_options(path: str, partitions: str | None = None) -> str:
     options = {"connector": "delta", "table_path": path}
     if partitions:
         options["partitions"] = partitions
+    if uid:  # a fixed operator uid lets a savepoint be restored into a new submission
+        options["uid"] = uid
     return _with(options)
 
 
@@ -172,9 +189,9 @@ def build_statements(cfg: JobConfig) -> tuple[list[str], list[str]]:
     {_with(source_options)}
 )""",
         f"CREATE TEMPORARY TABLE delta_bronze (\n    {_cols(_micros(bronze_cols))}\n) WITH (\n    "
-        f"{delta_options(f's3a://delta/{ns}_bronze/recentchange', partitions='event_date')}\n)",
+        f"{delta_options(f's3a://delta/{ns}_bronze/recentchange', partitions='event_date', uid=f'{ns}-delta-bronze')}\n)",
         f"CREATE TEMPORARY TABLE delta_gold (\n    {_cols(_micros(gold_cols))}\n) WITH (\n    "
-        f"{delta_options(f's3a://delta/{ns}_gold/edits_per_minute')}\n)",
+        f"{delta_options(f's3a://delta/{ns}_gold/edits_per_minute', uid=f'{ns}-delta-gold')}\n)",
         f"""CREATE TEMPORARY TABLE kafka_gold (
     {_cols(gold_cols)}
 ) WITH (
@@ -208,3 +225,18 @@ GROUP BY window_start, window_end, `wiki`""",
         f"INSERT INTO kafka_gold {gold_select}",
     ]
     return setup, inserts
+
+
+def plan_statements(cfg: JobConfig) -> tuple[str, str]:
+    """(COMPILE PLAN, EXECUTE PLAN) for the job's inserts.
+
+    A compiled plan fixes the operator ids, so a savepoint taken from one submission can be
+    restored into the next. Planned on the fly, Flink SQL numbers operators from a counter in the
+    planning JVM, which differs between SQL Gateway sessions. The file name includes a hash of
+    the SQL, so changing the job compiles a new plan instead of reusing a stale one.
+    """
+    setup, inserts = build_statements(cfg)
+    digest = hashlib.sha256("\n".join(setup + inserts).encode()).hexdigest()[:12]
+    path = f"{PLAN_DIR}/{cfg.job_name}-{digest}.json"
+    compile_sql = f"COMPILE PLAN '{path}' IF NOT EXISTS FOR STATEMENT SET BEGIN\n" + ";\n".join(inserts) + ";\nEND"
+    return compile_sql, f"EXECUTE PLAN '{path}'"

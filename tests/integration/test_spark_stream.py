@@ -87,12 +87,25 @@ def test_spark_stream_lands_bronze_and_gold(stream, settings, delta_reader):
         expected_edits(recs, at(10, 0)))
 
 
+def spark_window_rows(delta_reader, settings, cfg, minute) -> dict[str, list[tuple]]:
+    naive = minute.replace(tzinfo=None)
+    table = storage.iceberg_catalog(settings).load_table(f"{cfg.namespace}_gold.edits_per_minute").scan().to_arrow()
+    iceberg = sorted((r["wiki"], r["edits"]) for r in table.to_pylist() if r["window_start"].replace(tzinfo=None) == naive)
+    delta = sorted((wiki, edits) for ws, wiki, edits, *_ in
+                   delta_reader(f"delta/{cfg.namespace}_gold/edits_per_minute", GOLD_SQL) if ws == naive)
+    return {"iceberg": iceberg, "delta": delta}
+
+
 def test_spark_late_event_kept_in_bronze_excluded_from_window(stream, settings, delta_reader):
     cfg, recs = stream
-    before = wait_until(lambda: spark_gold(delta_reader, cfg, at(10, 0)))
-    produce(settings, cfg.raw_topic, [record_at(at(10, 0, 30), seed=7)])
-    wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 127)
-    assert spark_gold(delta_reader, cfg, at(10, 0)) == before
+    before = wait_until(lambda: (w := spark_window_rows(delta_reader, settings, cfg, at(10, 0)))["iceberg"]
+                        and w["delta"] and w)
+    # Spark's five queries progress independently: wait until *gold* has closed the 10:05 window
+    # (via a 10:07 flush sent after the late event) before checking 10:00 is unchanged.
+    produce(settings, cfg.raw_topic, [record_at(at(10, 0, 30), seed=7)] + flush_records(at(10, 7)))
+    wait_until(lambda: (w := spark_window_rows(delta_reader, settings, cfg, at(10, 5)))["iceberg"] and w["delta"])
+    wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 133)
+    assert spark_window_rows(delta_reader, settings, cfg, at(10, 0)) == before
 
 
 def test_spark_and_flink_gold_match(settings, spark, delta_reader):
@@ -166,3 +179,27 @@ def test_sigterm_stops_spark_queries(settings):
         if proc.poll() is None:
             proc.kill()
         cleanup(settings, cfg)
+
+
+def test_spark_bronze_survives_midnight(settings, spark):
+    """One micro-batch with events either side of midnight UTC spans two event_date partitions.
+    Iceberg's default partitioned writer rejects unsorted multi-partition input, which would
+    crash-loop the bronze query every night."""
+    from datetime import timedelta
+
+    cfg = stream_config(settings, "midnight")
+    new_topics(settings, cfg.raw_topic, cfg.agg_topic)
+    queries = []
+    try:
+        start = at(23, 59, 50)
+        recs = records(start, 20) + records(start + timedelta(seconds=5), 10, seed=4)  # interleaved dates
+        produce(settings, cfg.raw_topic, recs)
+        spark_stream.ensure_tables(spark, cfg)
+        queries = spark_stream.start_queries(spark, cfg)
+        wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 30
+                   or not all(q.isActive for q in queries), 120, 2)
+        failed = [(q.name, str(q.exception())[:200]) for q in queries if not q.isActive]
+        assert failed == []
+        assert iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 30
+    finally:
+        cleanup(settings, cfg, [q for q in queries if q.isActive])

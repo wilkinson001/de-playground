@@ -73,6 +73,7 @@ def wikimedia_records(
         headers = {"Accept": "text/event-stream", "User-Agent": USER_AGENT}
         if last_id:
             headers["Last-Event-ID"] = last_id
+        got_events = False
         try:
             with http.stream("GET", WIKIMEDIA_URL, headers=headers) as response:
                 if response.status_code != 200:
@@ -80,17 +81,22 @@ def wikimedia_records(
                         f"HTTP {response.status_code}", request=response.request, response=response
                     )
                 for event in parse_sse(response.iter_lines()):
-                    failures = 0
+                    got_events, failures = True, 0
                     if event.id:
                         last_id = event.id
                     if (record := decode(event)) is not None:
                         yield record
+            if got_events:
+                continue  # the server closed a working stream (it does, periodically): reconnect now
+            error: Exception = RuntimeError("stream closed without sending any events")
         except (httpx.TransportError, httpx.HTTPStatusError) as e:
-            failures += 1
-            if failures >= max_retries:
-                raise FeedUnavailable(f"{WIKIMEDIA_URL}: {e}") from e
-            log.warning("Wikimedia stream error (%s), reconnecting (attempt %d)", e, failures)
-            sleep(backoff_s * failures)
+            error = e
+        # A failed or empty connection: back off, so a misbehaving feed is never hammered.
+        failures += 1
+        if failures >= max_retries:
+            raise FeedUnavailable(f"{WIKIMEDIA_URL}: {error}") from error
+        log.warning("Wikimedia stream error (%s), reconnecting (attempt %d)", error, failures)
+        sleep(backoff_s * failures)
 
 
 def synthetic_records(rng: random.Random, interval_s: float = 0.2, sleep: Sleep = time.sleep) -> Iterator[dict]:

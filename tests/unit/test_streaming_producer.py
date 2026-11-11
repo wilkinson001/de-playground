@@ -94,3 +94,24 @@ def test_user_agent_has_no_email():
     assert requests[0].headers["user-agent"] == producer.USER_AGENT
     assert "@" not in producer.USER_AGENT
     assert "github.com/wilkinson001/de-playground" in producer.USER_AGENT
+
+
+def test_empty_streams_back_off_and_give_up():
+    # A feed that keeps answering 200 but closing without events must not be hammered: each empty
+    # connection counts as a failure (with backoff), so it eventually falls back.
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) > 10:
+            raise RuntimeError("reconnecting in a tight loop")
+        return httpx.Response(200, content=b"")
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        list(producer.wikimedia_records(http, max_retries=3, backoff_s=2.0, sleep=sleeps.append))
+        raise AssertionError("expected FeedUnavailable")
+    except producer.FeedUnavailable:
+        pass
+    assert len(calls) == 3
+    assert sleeps == [2.0, 4.0]

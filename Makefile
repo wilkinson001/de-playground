@@ -75,15 +75,22 @@ stream-setup: env ## Create Kafka topics (+ ClickHouse streaming tables); safe t
 		$(RUN) uv run python -m de_playground.streaming clickhouse-setup; fi
 
 FLINK_JOB := /opt/playground/src/de_playground/streaming/flink/job.py
-.PHONY: stream-job stream-status stream-stop
-stream-job: env ## (Re)submit the PyFlink streaming job (replaces a running one)
-	$(RUN) uv run python -m de_playground.streaming job-cancel
-	$(COMPOSE) $(STREAM_PROFILES) exec flink-jobmanager /opt/flink/bin/flink run -d -py $(FLINK_JOB)
+# Written by `job-stop` (via the runner, into the repo's .data/), read once by `stream-job`.
+FLINK_SAVEPOINT := .data/flink/savepoints/wikimedia-streaming
+.PHONY: stream-job stream-status stream-stop stream-cancel
+stream-job: env ## (Re)submit the PyFlink streaming job, resuming the previous one's state from a savepoint
+	$(RUN) uv run python -m de_playground.streaming job-stop
+	@SP=$$(cat $(FLINK_SAVEPOINT) 2>/dev/null); rm -f $(FLINK_SAVEPOINT); \
+	  if [ -n "$$SP" ]; then echo "resuming from $$SP"; fi; \
+	  $(COMPOSE) $(STREAM_PROFILES) exec flink-jobmanager /opt/flink/bin/flink run -d $${SP:+-s $$SP} -py $(FLINK_JOB)
 
 stream-status: env ## Show the Flink streaming job
 	$(RUN) uv run python -m de_playground.streaming job-status
 
-stream-stop: env ## Cancel the Flink streaming job
+stream-stop: env ## Stop the Flink streaming job with a savepoint (make stream-job resumes it)
+	$(RUN) uv run python -m de_playground.streaming job-stop
+
+stream-cancel: env ## Cancel the Flink streaming job WITHOUT a savepoint (its window state is lost)
 	$(RUN) uv run python -m de_playground.streaming job-cancel
 
 SPARK_STREAM_PROFILES := $(STREAM_PROFILES) --profile spark --profile spark-stream
@@ -109,4 +116,6 @@ duckdb-ui-local: env ## The same DuckDB UI, run directly on the host instead of 
 PIPELINE_SERVICES := duckdb-ui producer flink-jobmanager flink-taskmanager flink-sql-gateway spark-stream spark-connect kafka-ui kafka clickhouse
 .PHONY: pipelines-down
 pipelines-down: ## Stop every engine/pipeline service but keep the data lake (postgres, seaweedfs, lakekeeper) up
+	@if [ -n "$$($(COMPOSE) $(ALL_PROFILES) ps --status running -q flink-jobmanager)" ]; then \
+		$(RUN) uv run python -m de_playground.streaming job-stop; fi
 	$(COMPOSE) $(ALL_PROFILES) stop $(PIPELINE_SERVICES)

@@ -1,5 +1,6 @@
 """The Flink streaming job end to end: Kafka → bronze (Iceberg + Delta) and gold (Iceberg, Delta, Kafka)."""
 
+import time
 import uuid
 from datetime import datetime
 
@@ -77,14 +78,27 @@ def test_job_aggregates_per_minute(job, settings, delta_reader):
     assert first_window == expected_edits(recs, at(10, 0))
 
 
+def window_rows(delta_reader, settings, cfg, minute: datetime) -> dict[str, list[tuple]]:
+    """Every gold row for one window, per format: duplicates would show up as extra rows."""
+    naive = minute.replace(tzinfo=None)
+    table = storage.iceberg_catalog(settings).load_table(f"{cfg.namespace}_gold.edits_per_minute").scan().to_arrow()
+    iceberg = sorted((r["wiki"], r["edits"]) for r in table.to_pylist() if r["window_start"] == naive)
+    delta = sorted(delta_reader(f"delta/{cfg.namespace}_gold/edits_per_minute",
+                                f"SELECT wiki, edits FROM t WHERE window_start = TIMESTAMP '{naive:%Y-%m-%d %H:%M:%S}'"))
+    return {"iceberg": iceberg, "delta": delta}
+
+
 def test_late_event_kept_in_bronze_excluded_from_window(job, settings, delta_reader):
     cfg, recs = job
-    before = wait_until(lambda: gold_rows(delta_reader, settings, cfg, at(10, 0))["iceberg"])
-    # 10:00:30 arrives after the watermark has passed 10:04:30: too late for its window.
-    produce(settings, cfg.raw_topic, [record_at(at(10, 0, 30), seed=7)])
-    wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 127)
-    wait_until(lambda: delta_reader(f"delta/{cfg.namespace}_bronze/recentchange") == [(127,)])
-    assert gold_rows(delta_reader, settings, cfg, at(10, 0))["iceberg"] == before
+    before = wait_until(lambda: (w := window_rows(delta_reader, settings, cfg, at(10, 0)))["iceberg"] and w["delta"] and w)
+    # 10:00:30 arrives after the watermark has passed 10:04:30: too late for its window. A flush at
+    # 10:07 then closes the 10:05 window: once that's in gold, gold has processed the late event.
+    produce(settings, cfg.raw_topic, [record_at(at(10, 0, 30), seed=7)] + flush_records(at(10, 7)))
+    wait_until(lambda: window_rows(delta_reader, settings, cfg, at(10, 5))["iceberg"]
+               and window_rows(delta_reader, settings, cfg, at(10, 5))["delta"])
+    wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 133)
+    wait_until(lambda: delta_reader(f"delta/{cfg.namespace}_bronze/recentchange") == [(133,)])
+    assert window_rows(delta_reader, settings, cfg, at(10, 0)) == before
 
 
 def test_windows_emit_with_idle_partitions(settings, delta_reader):
@@ -111,5 +125,30 @@ def test_resubmit_replaces_running_job(settings):
         flink_control.submit(settings, cfg)
         flink_control.submit(settings, cfg)
         assert len(wait_until(lambda: flink_control.running_jobs(settings, cfg.job_name), 60)) == 1
+    finally:
+        cleanup(settings, cfg)
+
+
+def test_resubmit_keeps_window_state(settings, delta_reader):
+    """Replacing the job mid-window must not lose the events already counted in that window."""
+    cfg = job_config(settings, "state")
+    new_topics(settings, cfg.raw_topic, cfg.agg_topic)
+    try:
+        recs = records(at(10, 0), 60)  # 10:00:00 .. 10:00:59, one window
+        produce(settings, cfg.raw_topic, recs[:30])
+        flink_control.submit(settings, cfg)
+        wait_until(lambda: iceberg_count(settings, f"{cfg.namespace}_bronze.recentchange") == 30)
+        flink_control.submit(settings, cfg)  # replace the running job halfway through the window
+        produce(settings, cfg.raw_topic, recs[30:] + flush_records(at(10, 5)))
+        got = wait_until(lambda: gold_rows(delta_reader, settings, cfg, at(10, 0))["iceberg"])
+        assert got == expected_edits(recs, at(10, 0))
+        # ...nor re-read events already written: depending on when the old job's Kafka offsets were
+        # committed, a plain cancel + resubmit either loses window state or duplicates bronze.
+        # (Bronze and gold are separate sinks that commit independently: wait for bronze's commit.)
+        bronze = f"{cfg.namespace}_bronze.recentchange"
+        wait_until(lambda: iceberg_count(settings, bronze) >= 60 + 6)
+        time.sleep(10)  # two more checkpoints: any duplicates would have been committed by now
+        ids = storage.iceberg_catalog(settings).load_table(bronze).scan(selected_fields=("event_id",)).to_arrow()
+        assert ids.num_rows == 60 + 6 and len(set(ids.column("event_id").to_pylist())) == ids.num_rows
     finally:
         cleanup(settings, cfg)

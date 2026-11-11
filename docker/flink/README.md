@@ -99,3 +99,29 @@ first worked through the producer's backlog from the earliest offset):
 Query it yourself: `make shell`, then DuckDB's
 `delta_scan('s3://delta/flink_stream_gold/edits_per_minute')` (see `tests/integration/conftest.py`
 for the connection setup), or ClickHouse's `deltaLake(seaweedfs, url = 'http://seaweedfs:8333/delta/flink_stream_gold/edits_per_minute/')`.
+
+## Restarting the job without losing or duplicating data
+
+`make stream-job` **replaces** a running job via a savepoint: `make stream-stop` (also run by
+`make stream-job` and `make pipelines-down`) stops the job with a savepoint, recording its path
+in `.data/flink/savepoints/`, and the next `make stream-job` resumes from it with
+`flink run -s` (used once).
+
+A plain cancel + resubmit is wrong in either of two ways, depending on whether the old job had
+committed its Kafka offsets yet. It either **loses the windows still open** (gold undercounted)
+or **re-reads events already written** (duplicate bronze); the tests caught the second (96 bronze
+rows for 66 events). `make stream-cancel` still does a hard cancel, for when you want to throw
+the state away.
+
+Restoring a savepoint needs **stable operator ids**, which took two fixes:
+
+- **Compiled plan.** Planned on the fly, Flink SQL numbers its operators from a counter in the
+  planning JVM. The SQL Gateway is long-lived, so every submission got new ids and the savepoint
+  "cannot map state … operator not available in the new program". The job now runs as
+  `COMPILE PLAN … IF NOT EXISTS FOR STATEMENT SET` + `EXECUTE PLAN`, with the plan file name
+  hashed from the SQL, so changing the job's SQL gets a fresh plan instead of a stale one.
+- **Delta sink `uid`.** Without the connector's `'uid'` option, the Delta sink's operators got
+  new random ids every submission. Each Delta table now has a fixed one (`<ns>-delta-bronze/gold`).
+
+If you change the job's SQL so its state is no longer compatible, run `make stream-cancel` first
+(no savepoint), and the new job starts from its consumer group's committed offsets.

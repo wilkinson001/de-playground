@@ -145,8 +145,9 @@ make stream-job             # submit the PyFlink job (re-running replaces it)
 make stream-spark           # + Spark and its Structured Streaming queries (≈24 GB in total)
 ```
 
-`make stream-status`, `make stream-stop` and `make stream-spark-stop` manage them. Within a
-minute or two:
+`make stream-status`, `make stream-stop` (Flink, with a savepoint) and `make stream-spark-stop`
+manage them. Re-running `make stream-job` resumes from the last savepoint, so restarting never
+loses an open window or duplicates bronze (`docker/flink/README.md`). Within a minute or two:
 
 - **Flink UI**: http://localhost:8081, the running job's graph, watermarks and checkpoints.
 - **Spark UI**: http://localhost:4040/StreamingQuery/, the five Structured Streaming queries.
@@ -203,7 +204,9 @@ UNION ALL SELECT 'delta', count(*) FROM delta.manual_gold.daily_zone_stats;
 
 `make pipelines-down` stops every engine (Kafka, producer, Flink, Spark, ClickHouse) and the
 DuckDB UI, and leaves only the data lake (Postgres, SeaweedFS, Lakekeeper: ~1.6 GB, idle CPU)
-running. `make duckdb-ui` needs nothing more than that. `make down` stops everything, keeping the data; `make nuke` also deletes it.
+running. `make duckdb-ui` needs nothing more than that. It saves the Flink job's state (a
+savepoint) before stopping Flink, and Spark keeps its state in checkpoints, so to carry on later:
+`make up-stream && make stream-job && make stream-spark`. `make down` stops everything, keeping the data; `make nuke` also deletes it.
 
 ## Tests
 

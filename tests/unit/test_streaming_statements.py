@@ -19,8 +19,9 @@ def test_iceberg_catalog_ddl():
 def test_delta_options():
     # The released connector (4.4.1) rejects per-table fs.* options: S3 settings come from the
     # image's Hadoop core-site.xml instead, so only the table itself is described here.
-    opts = statements.delta_options("s3a://delta/ns_bronze/t", partitions="event_date")
-    assert opts == "'connector' = 'delta',\n    'table_path' = 's3a://delta/ns_bronze/t',\n    'partitions' = 'event_date'"
+    opts = statements.delta_options("s3a://delta/ns_bronze/t", partitions="event_date", uid="delta-ns-bronze")
+    assert opts == ("'connector' = 'delta',\n    'table_path' = 's3a://delta/ns_bronze/t',\n    "
+                    "'partitions' = 'event_date',\n    'uid' = 'delta-ns-bronze'")
     assert "partitions" not in statements.delta_options("s3a://delta/x")
     assert "fs.s3a" not in opts
 
@@ -125,3 +126,31 @@ def test_flink_modules_compile_on_the_flink_images_python():
         capture_output=True, text=True, timeout=300,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_plan_statements_use_one_stable_plan_file():
+    # Operator ids must be the same across submissions so a savepoint can be restored: a compiled
+    # plan fixes them (the SQL Gateway's long-lived JVM would otherwise number operators afresh).
+    cfg = statements.JobConfig.from_env(ENV)
+    compile_sql, execute_sql = statements.plan_statements(cfg)
+    path = execute_sql.removeprefix("EXECUTE PLAN '").removesuffix("'")
+    assert path.startswith("file:///opt/flink/checkpoints/plans/wikimedia-streaming-") and path.endswith(".json")
+    assert compile_sql.startswith(f"COMPILE PLAN '{path}' IF NOT EXISTS FOR STATEMENT SET BEGIN")
+    _, inserts = statements.build_statements(cfg)
+    assert all(i in compile_sql for i in inserts) and compile_sql.endswith("END")
+    assert statements.plan_statements(cfg) == (compile_sql, execute_sql)  # deterministic
+
+
+def test_changed_sql_gets_a_new_plan_file():
+    a = statements.plan_statements(statements.JobConfig.from_env(ENV))[1]
+    b = statements.plan_statements(statements.JobConfig.from_env({**ENV, "STREAM_NAMESPACE": "other"}))[1]
+    assert a != b
+
+
+def test_delta_sinks_have_stable_uids():
+    # Without a fixed uid the Delta sink's operators get new ids each submission, and a savepoint
+    # can't be restored ("operator is not available in the new program").
+    setup, _ = statements.build_statements(statements.JobConfig.from_env(ENV))
+    delta_ddl = [st for st in setup if st.startswith("CREATE TEMPORARY TABLE delta_")]
+    assert "'uid' = 'flink_stream-delta-bronze'" in delta_ddl[0]
+    assert "'uid' = 'flink_stream-delta-gold'" in delta_ddl[1]

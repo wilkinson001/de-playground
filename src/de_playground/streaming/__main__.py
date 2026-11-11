@@ -22,7 +22,8 @@ def main(argv: list[str] | None = None) -> None:
     prod.add_argument("--topic", default=topics.RAW_TOPIC)
     sub.add_parser("spark-stream", help="run the Spark Structured Streaming queries until stopped")
     sub.add_parser("job-status", help="list running Flink streaming jobs")
-    sub.add_parser("job-cancel", help="cancel the Flink streaming job (so a resubmit replaces it)")
+    sub.add_parser("job-stop", help="stop the Flink streaming job with a savepoint (the next submit resumes it)")
+    sub.add_parser("job-cancel", help="cancel the Flink streaming job without a savepoint (state is lost)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -35,9 +36,12 @@ def main(argv: list[str] | None = None) -> None:
         print("ClickHouse: wikimedia.recentchange and wikimedia.edits_per_minute ingesting from Kafka")
     elif args.command == "spark-stream":
         spark_stream.run(settings, spark_stream.SparkStreamConfig.from_env(os.environ))
-    elif args.command in ("job-status", "job-cancel"):
+    elif args.command in ("job-status", "job-stop", "job-cancel"):
         name = JobConfig.from_env(os.environ).job_name
-        if args.command == "job-cancel":
+        if args.command == "job-stop":
+            savepoint = flink_control.stop_with_savepoint(settings, name)
+            print(f"stopped {name}, savepoint: {savepoint}" if savepoint else f"{name}: nothing running")
+        elif args.command == "job-cancel":
             print(f"cancelled {name}: {flink_control.cancel_jobs(settings, name) or 'nothing running'}")
         else:
             print(f"{name}: {flink_control.running_jobs(settings, name) or 'not running'}")
