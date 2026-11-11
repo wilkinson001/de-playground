@@ -72,6 +72,7 @@ doing.
 - Batch medallion (bronze/silver/gold) track + streaming track.
 - Batch pipeline is **incremental, month by month**, with merge/upsert into
   silver and gold.
+- Flink writes **both Iceberg and Delta** in the streaming track.
 - Public datasets; public streaming APIs acceptable.
 - Table formats: **DuckLake, Iceberg and Delta** all included, specifically to
   learn writing to and interacting with each.
@@ -139,7 +140,7 @@ Debezium).
   Builder to confirm Iceberg + Delta versions compatible with the chosen Spark
   version, and fall back to Spark 3.5 if Spark 4 compatibility is not there.
 - **PyFlink** — Flink JobManager + TaskManager in a custom image with Python and
-  the Kafka / Iceberg / (Delta if viable) connector jars baked in.
+  the Kafka / Iceberg / Delta connector jars baked in.
 - **Kafka** — single broker, KRaft mode, plus a web UI.
 - **ClickHouse** — real-time analytics store for streaming results (via its
   Kafka table engine into MergeTree tables) and a reader of gold
@@ -184,8 +185,12 @@ Debezium).
   the fallback if the feed is unavailable.
 - **Processing:** PyFlink job(s) doing windowed aggregations (e.g. edits per
   wiki per minute, bot vs human ratio, top edited pages), writing results to a
-  Kafka output topic and an Iceberg table (*my call* on specific
-  aggregations).
+  Kafka output topic, an Iceberg table **and a Delta table** (owner's decision,
+  2026-11-11: Flink must write Delta too) (*my call* on specific aggregations).
+- Research note (2026-11-11): Flink 2.0.x is the common ground — Iceberg
+  `iceberg-flink-runtime-2.0` (1.10.x, same Iceberg line as Spark) and the
+  Kernel-based `delta-flink_2.0` (4.4.x, experimental, **sink-only**: Flink can
+  write Delta but not read it; exposes a Flink SQL `'connector' = 'delta'`).
 - **Serving:** ClickHouse consumes the raw and/or aggregated topics into
   MergeTree tables for fast queries.
 
