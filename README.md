@@ -32,6 +32,46 @@ only what it needs. Design: `docs/superpowers/specs/2026-11-11-de-playground-des
 
 SQL lives in `src/de_playground/batch/sql/`; table schemas in `batch/schemas.py`.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    tlc["NYC TLC trip data<br/>(public CloudFront)"]
+
+    subgraph tools["profile: tools"]
+        runner["runner (Python 3.12)<br/>pipeline CLI · bootstrap · tests<br/>embedded DuckDB"]
+    end
+
+    subgraph spark_p["profile: spark"]
+        spark["Spark 4 Connect server :15002<br/>Iceberg + Delta connectors"]
+    end
+
+    subgraph core["profile: core"]
+        pg[("Postgres 18 :5432<br/>dbs: ducklake · lakekeeper<br/>dbos · prefect · dagster")]
+        lk["Lakekeeper :8181<br/>Iceberg REST catalog"]
+        s3[("SeaweedFS S3 :8333<br/>buckets: raw · ducklake<br/>iceberg · delta")]
+    end
+
+    subgraph ch_p["profile: clickhouse"]
+        ch["ClickHouse :8123<br/>iceberg_lake · delta_gold"]
+    end
+
+    tlc -- "download (once per month)" --> runner
+    runner -- "raw files" --> s3
+    runner -- "DuckLake catalog" --> pg
+    runner -- "DuckLake data files" --> s3
+    runner -- "SQL over gRPC (pyspark-client)" --> spark
+    spark -- "Iceberg tables" --> lk
+    spark -- "Iceberg + Delta files, raw reads" --> s3
+    lk -- "catalog state" --> pg
+    lk -. "validates warehouse" .-> s3
+    ch -- "DataLakeCatalog" --> lk
+    ch -- "reads Iceberg + Delta files" --> s3
+```
+
+More in [`docs/architecture.md`](docs/architecture.md): where each table format keeps its
+metadata, and the month-by-month bronze → silver → gold flow.
+
 ## First run
 
 ```bash
