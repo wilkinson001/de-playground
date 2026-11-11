@@ -79,6 +79,7 @@ On an M5 Pro a month takes ~4s end to end in DuckDB and ~25–30s in Spark.
 - DuckLake's `MERGE` allows only one UPDATE/DELETE action, so on DuckLake the "delete rows the
   month no longer produces" step is a separate `DELETE` in the same transaction; Iceberg and Delta
   do it in one `MERGE … WHEN NOT MATCHED BY SOURCE`.
-- ClickHouse can create (path-based) and append to Iceberg/Delta tables but has no `MERGE` and no
-  `TRUNCATE` for lake tables; DuckDB writes Iceberg fully but Delta only reads (see the matrix).
+- ClickHouse can create (path-based) Iceberg tables and append to Iceberg and existing Delta tables,
+  but has no `MERGE` and no `TRUNCATE` for lake tables; DuckDB writes Iceberg fully but only reads
+  Delta (see the matrix).
 - SeaweedFS needs headroom (2 GB + `GOMEMLIMIT`) under parallel Spark I/O or it gets OOM-killed.
