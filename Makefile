@@ -55,3 +55,7 @@ NS ?= manual
 .PHONY: batch
 batch: download ## Run the medallion pipeline (TARGET=all|duckdb:ducklake|spark:iceberg|spark:delta MONTHS=... NS=manual)
 	$(RUN) uv run python -m de_playground.batch run --target $(TARGET) --months $(MONTHS) --namespace $(NS)
+
+.PHONY: matrix
+matrix: env ## Probe every engine x table format and write docs/engine-format-matrix.md
+	$(RUN) uv run python -m de_playground.matrix
