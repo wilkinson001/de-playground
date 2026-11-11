@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stream Wikimedia recent changes, falling back to synthetic events, through Kafka into a PyFlink job. The job lands raw events in Iceberg **and** Delta (bronze) and writes per-minute windowed aggregates to Iceberg, Delta and a Kafka topic (gold). ClickHouse ingests both topics for live queries, and Flink is added to the engine × format matrix.
+**Goal:** Stream Wikimedia recent changes, falling back to synthetic events, through Kafka into two streaming engines, a PyFlink job and Spark Structured Streaming, that do the same work. Each lands raw events in Iceberg **and** Delta (bronze) and writes per-minute windowed aggregates to Iceberg, Delta and its own Kafka topic (gold), and a test proves they agree. ClickHouse ingests the topics for live, side-by-side queries, and Flink is added to the engine × format matrix.
 
-**Architecture:** A new Compose profile `streaming` adds Kafka (KRaft), Kafka UI, a producer service, and Flink (JobManager, TaskManager, SQL Gateway) built on one custom image with Kafka, Iceberg and Delta connectors. All Python is in the existing `de_playground` package under `streaming/`. The Flink job is Flink SQL rendered by a pure-stdlib module and run by a PyFlink entrypoint inside the Flink containers. Everything else (producer, setup, tests) runs in the existing `runner`.
+**Architecture:** A new Compose profile `streaming` adds Kafka (KRaft), Kafka UI, a producer service, and Flink (JobManager, TaskManager, SQL Gateway) built on one custom image with Kafka, Iceberg and Delta connectors. All Python is in the existing `de_playground` package under `streaming/`. The Flink job is Flink SQL rendered by a pure-stdlib module and run by a PyFlink entrypoint inside the Flink containers. Spark Structured Streaming runs on the existing Spark Connect server: a small `spark-stream` service (runner image) starts its queries and keeps the session open. Everything else (producer, setup, tests) runs in the existing `runner`.
 
-**Tech Stack:** Apache Kafka 4.3 (KRaft), kafbat Kafka UI, confluent-kafka (Python), Apache Flink 2.0.1 + PyFlink, `iceberg-flink-runtime-2.0` 1.10.2, `delta-flink_2.0` 4.4.1 (experimental, sink-only), `flink-sql-connector-kafka` 4.0.1-2.0, ClickHouse Kafka engine, pyiceberg + deltalake for verification.
+**Tech Stack:** Apache Kafka 4.3 (KRaft), kafbat Kafka UI, confluent-kafka (Python), Apache Flink 2.0.1 + PyFlink, `iceberg-flink-runtime-2.0` 1.10.2, `delta-flink_2.0` 4.4.1 (experimental, sink-only), `flink-sql-connector-kafka` 4.0.1-2.0, Spark 4.0.1 Structured Streaming + `spark-sql-kafka-0-10_2.13:4.0.1`, ClickHouse Kafka engine, pyiceberg + deltalake for verification.
 
 **Spec:** `docs/superpowers/specs/2026-11-11-de-playground-design.md` (Streaming track, and the research note on Flink 2.0). This plan builds on the phase 1–2 code on `main`; read `README.md` and `docs/architecture.md` first.
 
@@ -19,6 +19,7 @@
   - `delta-flink_2.0:4.4.1`, with its transitive runtime deps
   - `flink-sql-connector-kafka:4.0.1-2.0`
 - Flink must write **both Iceberg and Delta** (owner's decision). Flink cannot read Delta (the connector is sink-only), so Delta output is verified from Python (`deltalake`) or Spark.
+- **Spark Structured Streaming does the same operations as Flink** (owner's decision): same source topic, same bronze columns, same gold columns and window semantics (1-minute tumbling, 30 s watermark, append mode). Spark's Kafka jars are added to the existing Spark image: `spark-sql-kafka-0-10_2.13:4.0.1`, `spark-token-provider-kafka-0-10_2.13:4.0.1`, plus the `kafka-clients` and `commons-pool2` versions named in that artifact's pom.
 - Every published port binds to `127.0.0.1`. Memory limits:
 
   | Service | Limit |
@@ -29,17 +30,18 @@
   | flink-jobmanager | 1536m |
   | flink-taskmanager | 3g |
   | flink-sql-gateway | 1g |
+  | spark-stream | 512m |
 
-  `make up-stream` (core + streaming + clickhouse) must stay under ~16 GB.
+  `make up-stream` (core + streaming + clickhouse) must stay under ~16 GB; adding Spark (`make stream-spark`) must stay under ~24 GB.
 - Kafka listeners: containers use `kafka:29092`; the host uses `localhost:9092`.
-- Topics: `wikimedia.recentchange` (normalised raw events) and `wikimedia.edits_per_minute` (aggregates), 3 partitions each.
-- Table naming follows phase 2, with default namespace `streaming`:
-  - Iceberg: `streaming_bronze.recentchange` and `streaming_gold.edits_per_minute` in the Lakekeeper warehouse `lakehouse`.
-  - Delta: `s3a://delta/streaming_bronze/recentchange` and `s3a://delta/streaming_gold/edits_per_minute`.
-  - Integration tests use their own namespace and topics, and remove them afterwards.
+- Topics, 3 partitions each: `wikimedia.recentchange` (normalised raw events, read by both engines), `wikimedia.edits_per_minute.flink` and `wikimedia.edits_per_minute.spark` (each engine's aggregates).
+- Table naming follows phase 2. Each engine has its own namespace, so the two never collide: Flink uses `flink_stream` and Spark uses `spark_stream`.
+  - Iceberg: `<ns>_bronze.recentchange` and `<ns>_gold.edits_per_minute` in the Lakekeeper warehouse `lakehouse`.
+  - Delta: `s3a://delta/<ns>_bronze/recentchange` and `s3a://delta/<ns>_gold/edits_per_minute`.
+  - Integration tests use their own namespaces and topics, and remove them afterwards.
 - The Wikimedia `User-Agent` names the project and repo (`de-playground/0.1 (https://github.com/wilkinson001/de-playground)`). Never put a personal email in it.
 - Modules under `src/de_playground/streaming/flink/` import only the stdlib and `pyflink`. They run inside the Flink image, which doesn't have the runner's dependencies.
-- Event time is UTC. Watermark delay is 30 s. Tumbling windows are 1 minute. `table.exec.source.idle-timeout` is 10 s. The checkpoint interval is 30 s by default (5 s in tests), stored in `file:///opt/flink/checkpoints` on a volume shared by the JobManager and TaskManager.
+- Event time is UTC. Watermark delay is 30 s. Tumbling windows are 1 minute. `table.exec.source.idle-timeout` is 10 s. The checkpoint interval is 30 s by default (5 s in tests), stored in `file:///opt/flink/checkpoints` on a volume shared by the JobManager and TaskManager. Spark: `withWatermark("event_ts", "30 seconds")`, trigger every 10 s, checkpoints under `/opt/spark/checkpoints/<ns>/<query>` on a `sparkcheckpoints` volume mounted in `spark-connect`.
 - Each new component gets a `docker/<component>/README.md` (what it is, wiring, things to try), as in phases 1–2.
 
 ## Review Focus
@@ -47,16 +49,17 @@
 1. **Late or out-of-order events.** An event arriving more than 30 s behind the watermark is dropped from the window aggregates but still lands in bronze. Test: `test_late_event_kept_in_bronze_excluded_from_window` (Task 5).
 2. **Idle Kafka partitions stall the watermark.** With low volume or keyed traffic, some partitions get nothing, and windows must still emit. Test: `test_windows_emit_with_idle_partitions` (Task 5).
 3. **Wikimedia feed hiccups.** After a disconnect the producer reconnects and resumes from `Last-Event-ID`. Canary events (`meta.domain == "canary"`) and malformed JSON are skipped, and the producer doesn't crash. Tests: `test_canary_and_malformed_skipped` (Task 2) and `test_reconnect_resumes_from_last_event_id` (Task 3).
-4. **Duplicates after restarts.** At-least-once delivery means a restarted Flink job or producer can resend messages. ClickHouse tables collapse those duplicates (`ReplacingMergeTree`, queried with `FINAL`). Test: `test_duplicate_messages_collapse` (Task 6).
-5. **Re-submitting the job** while one is already running must replace it rather than run two writers. Test: `test_resubmit_replaces_running_job` (Task 5).
+4. **Duplicates after restarts.** At-least-once delivery means a restarted Flink job, Spark query or producer can resend messages. ClickHouse tables collapse those duplicates (`ReplacingMergeTree`, queried with `FINAL`). Test: `test_duplicate_messages_collapse` (Task 7).
+5. **Restarting either streaming job** must replace it rather than run two writers. For Spark this includes stopping the `spark-stream` container, since Spark Connect keeps a disconnected session's queries running until the session times out. Tests: `test_resubmit_replaces_running_job` (Task 5), `test_restart_replaces_spark_queries` and `test_sigterm_stops_spark_queries` (Task 6).
 
 ---
 
 ## File Structure
 
 ```
-compose.yaml                               # + kafka, kafka-ui, producer, flink-jobmanager, flink-taskmanager, flink-sql-gateway (profile streaming)
-Makefile                                   # + up-stream, stream-setup, stream-job, stream-status, stream-stop
+compose.yaml                               # + kafka, kafka-ui, producer, flink-* (profile streaming); spark-stream (profile spark-stream)
+Makefile                                   # + up-stream, stream-setup, stream-job, stream-status, stream-stop, stream-spark, stream-spark-stop
+docker/spark/Dockerfile                    # + Spark Kafka connector jars
 docker/kafka/README.md
 docker/flink/Dockerfile                    # multi-stage: maven resolves connector jars → flink:2.0.1-java17 + python3 + apache-flink
 docker/flink/pom.xml                       # connector dependency list (flink-* excluded / provided)
@@ -74,6 +77,7 @@ src/de_playground/streaming/flink_gateway.py  # SQL Gateway client (runner side;
 src/de_playground/streaming/flink/__init__.py
 src/de_playground/streaming/flink/statements.py  # stdlib-only: renders the job's Flink SQL
 src/de_playground/streaming/flink/job.py   # PyFlink entrypoint (runs in Flink containers)
+src/de_playground/streaming/spark_stream.py  # Spark Structured Streaming: same ops as the Flink job
 src/de_playground/streaming/clickhouse_streaming.py  # Kafka-engine ingestion DDL
 src/de_playground/matrix/probes.py         # + FlinkAdapter (via SQL Gateway)
 docs/architecture.md, README.md            # + streaming
@@ -99,14 +103,15 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
     | `flink_url` | `PLAYGROUND_FLINK_URL` | `http://flink-jobmanager:8081` |
     | `flink_sql_gateway_url` | `PLAYGROUND_FLINK_SQL_GATEWAY_URL` | `http://flink-sql-gateway:8083` |
 
-  - `topics.RAW_TOPIC = "wikimedia.recentchange"`, `topics.AGG_TOPIC = "wikimedia.edits_per_minute"`.
-  - `topics.ensure_topics(settings, names: list[str] | None = None, partitions: int = 3) -> list[str]` returns the topics it created. It is idempotent and defaults to both topics.
+  - `topics.RAW_TOPIC = "wikimedia.recentchange"`, `topics.AGG_TOPICS = {"flink": "wikimedia.edits_per_minute.flink", "spark": "wikimedia.edits_per_minute.spark"}`.
+  - `topics.ensure_topics(settings, names: list[str] | None = None, partitions: int = 3) -> list[str]` returns the topics it created. It is idempotent and defaults to all three topics.
   - `python -m de_playground.streaming setup` runs `ensure_topics`; Task 6 extends it to also set up ClickHouse.
   - Compose (profile `streaming`):
     - `kafka`: `apache/kafka:4.3.2`, KRaft combined broker+controller. Listeners `PLAINTEXT://kafka:29092`, `HOST://localhost:9092` and `CONTROLLER`. Port `127.0.0.1:9092`. Healthcheck with `kafka-broker-api-versions.sh`. Named volume `kafkadata`.
     - `kafka-ui`: `kafbat/kafka-ui:v1.5.0` on `127.0.0.1:8080`, cluster `playground` → `kafka:29092`.
   - Make targets:
-    - `make up-stream` = profiles core + streaming + clickhouse, `up -d --wait`. `PROFILES` gains `--profile streaming`, so `RUN` sees every service.
+    - Split the Makefile's profile list: `ALL_PROFILES` (every profile: core, spark, clickhouse, streaming, spark-stream) is used by `RUN`, `down`, `nuke`, `ps` and `logs`, so the runner can resolve every dependency. `up-batch` keeps starting only core + spark + clickhouse.
+    - `make up-stream` = profiles core + streaming + clickhouse, `up -d --wait`.
     - `make stream-setup` = `$(RUN) uv run python -m de_playground.streaming setup`.
 - [ ] **Step 1: Write the failing tests.**
   - Extend `test_settings_from_env_defaults` with the three new defaults.
@@ -213,7 +218,7 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 
 ---
 
-### Task 5: The streaming job
+### Task 5: The Flink streaming job
 
 **Files:**
 - Modify: `src/de_playground/streaming/flink/statements.py`
@@ -224,7 +229,7 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 **Interfaces:**
 - Consumes: the Task 4 helpers, the Task 2 record schema, and the topics.
 - Produces:
-  - `JobConfig` (frozen dataclass): `namespace="streaming"`, `raw_topic`, `agg_topic`, `kafka_bootstrap`, `group_id="flink-wikimedia"`, `lakekeeper_url`, `warehouse`, `s3_endpoint`, `access_key`, `secret_key`, `checkpoint_interval="30s"`, `watermark_delay_s=30`, `job_name="wikimedia-streaming"`. `JobConfig.from_env(env)` reads the same env vars as `Settings`, plus `STREAM_NAMESPACE`, `STREAM_RAW_TOPIC`, `STREAM_AGG_TOPIC`, `STREAM_GROUP_ID` and `STREAM_CHECKPOINT_INTERVAL`, so tests can override them.
+  - `JobConfig` (frozen dataclass): `namespace="flink_stream"`, `raw_topic`, `agg_topic` (default `AGG_TOPICS["flink"]`), `kafka_bootstrap`, `group_id="flink-wikimedia"`, `lakekeeper_url`, `warehouse`, `s3_endpoint`, `access_key`, `secret_key`, `checkpoint_interval="30s"`, `watermark_delay_s=30`, `job_name="wikimedia-streaming"`. `JobConfig.from_env(env)` reads the same env vars as `Settings`, plus `STREAM_NAMESPACE`, `STREAM_RAW_TOPIC`, `STREAM_AGG_TOPIC`, `STREAM_GROUP_ID` and `STREAM_CHECKPOINT_INTERVAL`, so tests can override them.
   - `build_statements(cfg: JobConfig) -> tuple[list[str], list[str]]` returns `(setup_ddl, inserts)`. The inserts run together as one `StatementSet` (one job).
     - **source** `recentchange_src`: Kafka, JSON, `RECORD_FIELDS` columns; `event_ts AS TO_TIMESTAMP_LTZ(…)` parsed from `event_time`; `WATERMARK FOR event_ts AS event_ts - INTERVAL '30' SECOND`; `'scan.startup.mode'='group-offsets'`, `'properties.auto.offset.reset'='earliest'`.
     - **bronze**: Iceberg `lakehouse.<ns>_bronze.recentchange` (all fields + `event_date` DATE, partitioned by `event_date`) and Delta `s3a://delta/<ns>_bronze/recentchange` (same columns, `partitions='event_date'`). Both are append-only.
@@ -236,7 +241,7 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
     - `stream-status`: list the jobs.
     - `stream-stop`: cancel.
 - [ ] **Step 1: Write the failing unit tests.**
-  - `test_build_statements_tables_and_watermark`: the rendered SQL contains the watermark clause with `INTERVAL '30' SECOND`, `TUMBLE(`, all five sink targets for namespace `streaming`, and `'scan.startup.mode' = 'group-offsets'`.
+  - `test_build_statements_tables_and_watermark`: the rendered SQL contains the watermark clause with `INTERVAL '30' SECOND`, `TUMBLE(`, all five sink targets for namespace `flink_stream`, and `'scan.startup.mode' = 'group-offsets'`.
   - `test_build_statements_respects_namespace_and_topics`: a custom namespace and topics appear, and the defaults don't.
   - `test_statements_module_is_stdlib_only`: parse `statements.py` with `ast`. Its imports must be stdlib only, or `pyflink`.
 - [ ] **Step 2: Write the failing integration tests.** Each uses fresh topics and namespace (env overrides passed to `flink run` via `-D`/env), `STREAM_CHECKPOINT_INTERVAL=5s`, synthetic events with fixed past event times produced by the test, and polling with a 120 s timeout. Verify with pyiceberg and deltalake.
@@ -251,7 +256,53 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 
 ---
 
-### Task 6: ClickHouse ingestion from Kafka
+### Task 6: Spark Structured Streaming doing the same work
+
+**Files:**
+- Modify: `docker/spark/Dockerfile` (+ Kafka connector jars), `docker/spark/README.md`, `compose.yaml` (`sparkcheckpoints` volume on `spark-connect`; service `spark-stream`), `Makefile` (`stream-spark`, `stream-spark-stop`)
+- Create: `src/de_playground/streaming/spark_stream.py`
+- Modify: `src/de_playground/streaming/__main__.py` (`spark-stream`)
+- Test: `tests/integration/test_spark_stream.py`, `tests/unit/test_spark_stream_config.py`
+
+**Interfaces:**
+- Consumes: `RECORD_FIELDS` (Task 2), `RAW_TOPIC`/`AGG_TOPICS` (Task 1), `spark_engine` / the Spark Connect server (phase 2), the Task 5 job and its `JobConfig` (for the equivalence test).
+- Produces:
+  - `SparkStreamConfig` (frozen dataclass): `namespace="spark_stream"`, `raw_topic=RAW_TOPIC`, `agg_topic=AGG_TOPICS["spark"]`, `kafka_bootstrap`, `checkpoint_root="/opt/spark/checkpoints"`, `watermark="30 seconds"`, `trigger="10 seconds"`, `starting_offsets="earliest"`. `SparkStreamConfig.from_env(env)` takes the same `STREAM_*` overrides as `JobConfig`.
+  - `QUERY_NAMES(cfg) -> list[str]` returns `<ns>-bronze-iceberg`, `<ns>-bronze-delta`, `<ns>-gold-iceberg`, `<ns>-gold-delta` and `<ns>-gold-kafka`. Each query checkpoints to `<checkpoint_root>/<ns>/<query name>`.
+  - `parse_events(kafka_df: DataFrame) -> DataFrame` uses `from_json(value)` with a schema built from `RECORD_FIELDS`, and returns the same bronze columns as Flink: all fields, `event_ts` (timestamp from `event_time`) and `event_date`.
+  - `aggregate(events: DataFrame, watermark: str) -> DataFrame` applies `withWatermark("event_ts", watermark)`, then `groupBy(window("event_ts", "1 minute"), "wiki")`, producing exactly the Flink gold columns: `window_start`, `window_end`, `wiki`, `edits`, `bot_edits`, `human_edits`, `new_pages`, `bytes_added`, `bytes_removed`. Output mode is `append`, so a window is emitted once, after the watermark passes it, as in Flink.
+  - `ensure_tables(spark, cfg) -> None` creates the Iceberg namespaces and tables (partitioned like Flink's) and the Delta tables by path, with `CREATE … IF NOT EXISTS`.
+  - `start_queries(spark, cfg) -> list[StreamingQuery]` starts the five queries.
+    - Bronze: `toTable` for Iceberg and `format("delta").start(path)` for Delta.
+    - Gold: the same two sinks, plus `format("kafka")` with `to_json(struct(*))` as the value and `wiki` as the key.
+    - `spark.sql.streaming.stopActiveRunOnRestart` stays true (the Spark default), so starting with the same checkpoint stops an older run of that query.
+  - `run(settings, cfg) -> None` (the `spark-stream` service entrypoint) creates the session, calls `ensure_tables` and `start_queries`, installs a SIGTERM/SIGINT handler that `stop()`s every query before exiting, and blocks on `awaitAnyTermination()`. If any query fails, it exits non-zero (Compose restarts it).
+  - Compose service `spark-stream`, in its own profile `spark-stream` so `up-batch` never starts it:
+    - runner image;
+    - command `uv run python -m de_playground.streaming spark-stream`;
+    - `restart: unless-stopped`, `stop_grace_period: 30s`;
+    - depends on healthy `spark-connect` and `kafka`;
+    - `mem_limit` 512m.
+  - Make targets:
+    - `make stream-spark` = profiles core + streaming + clickhouse + spark + spark-stream, `up -d --wait spark-connect spark-stream`;
+    - `make stream-spark-stop` = `$(COMPOSE) … stop spark-stream`. The SIGTERM handler stops the queries.
+- [ ] **Step 1: Write the failing tests.**
+  - Unit `test_spark_stream_config_and_query_names`: defaults, `from_env` overrides, and the exact query names and checkpoint paths for namespace `spark_stream`.
+  - Integration `test_spark_parse_and_aggregate_static`: run `parse_events` and `aggregate` on a *static* DataFrame of JSON strings (the same synthetic records as the Flink test). The watermark is a no-op on static data, and gold matches the counts computed in the test.
+  - Integration `test_spark_stream_lands_bronze_and_gold`: fresh topics, namespace, and a `checkpoint_root` under the test id. Start the queries with a `trigger` of 2 seconds and produce the same 10:00 / 10:01 / 10:05 events as the Flink test. Bronze has 121 rows in Iceberg and Delta, and gold for 10:00 is in Iceberg, Delta and the Spark agg topic.
+  - Integration `test_spark_late_event_kept_in_bronze_excluded_from_window`: same scenario as the Flink test.
+  - Integration `test_spark_and_flink_gold_match`: run the Flink job (Task 5, test config) and the Spark queries over the **same** test raw topic. Gold for every completed window (10:00, 10:01) is identical across the two engines, compared through `deltalake` on each engine's Delta gold.
+  - Integration `test_restart_replaces_spark_queries`: call `start_queries` from session A, then again from session B with the same config. Session A's queries are no longer active, and B has 5 active queries.
+  - Integration `test_sigterm_stops_spark_queries`: start `run` in a subprocess (`python -m de_playground.streaming spark-stream` with test env), wait until it is running, then send SIGTERM. Within 30 s, a fresh session's `start_queries` with the same config starts cleanly and the subprocess has exited 0.
+- [ ] **Step 2: Run** `make stream-spark` (to build the image with the Kafka jars), then the tests. Expect FAIL.
+- [ ] **Step 3: Implement.** Confirm the `kafka-clients`/`commons-pool2` versions from `spark-sql-kafka-0-10_2.13-4.0.1.pom` and pin them in the Dockerfile with a comment, the same way the phase 2 jars are pinned.
+- [ ] **Step 4: Run.** Expect PASS. Then re-run the phase 2 Spark integration tests (`test_spark_formats.py`, `test_spark_pipeline.py`) to confirm the image change broke nothing.
+- [ ] **Step 5: Manual check.** `make stream-spark`, wait about 2 minutes, then check the Structured Streaming tab in the Spark UI (`:4040`) for 5 active queries and rows in `spark_stream_gold`.
+- [ ] **Step 6: Commit.** `feat: spark structured streaming mirroring the flink job`
+
+---
+
+### Task 7: ClickHouse ingestion from Kafka
 
 **Files:**
 - Create: `src/de_playground/streaming/clickhouse_streaming.py`
@@ -260,14 +311,16 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 
 **Interfaces:**
 - Produces:
-  - `statements(raw_topic: str, agg_topic: str, kafka: str = "kafka:29092", database: str = "wikimedia") -> list[str]`, idempotent (`IF NOT EXISTS`). It creates:
+  - `statements(raw_topic: str, agg_topics: dict[str, str], kafka: str = "kafka:29092", database: str = "wikimedia") -> list[str]`, idempotent (`IF NOT EXISTS`). It creates:
     - `{db}.recentchange_queue`: `ENGINE = Kafka` on `raw_topic`, `JSONEachRow`, group `clickhouse-{db}-raw`.
     - `{db}.recentchange`: `ReplacingMergeTree`, `ORDER BY (wiki, event_id)`, `PARTITION BY toDate(event_time)`, with `event_time DateTime64(3, 'UTC')`.
     - A materialized view `{db}.recentchange_mv` from the queue into the table.
-    - The same trio for `edits_per_minute`: `ReplacingMergeTree`, `ORDER BY (wiki, window_start)`.
-  - `run(settings, raw_topic=RAW_TOPIC, agg_topic=AGG_TOPIC, database="wikimedia") -> None`.
+    - `{db}.edits_per_minute`: `ReplacingMergeTree`, `ORDER BY (engine, wiki, window_start)`, with an `engine LowCardinality(String)` column.
+    - For each `(engine, topic)` in `agg_topics`: `{db}.edits_per_minute_{engine}_queue` (`ENGINE = Kafka`, group `clickhouse-{db}-{engine}`) and a materialized view that inserts with `'{engine}' AS engine`. One table holds both engines' aggregates, so they can be compared with a `GROUP BY engine`.
+  - `run(settings, raw_topic=RAW_TOPIC, agg_topics=AGG_TOPICS, database="wikimedia") -> None`.
 - [ ] **Step 1: Write the failing tests.**
-  - Unit `test_statements_shape`: 6 statements, `ENGINE = Kafka` twice, `ReplacingMergeTree` twice, the topics are substituted, and all statements use `IF NOT EXISTS`.
+  - Unit `test_statements_shape`: with both engines there are 8 statements, `ENGINE = Kafka` 3 times, `ReplacingMergeTree` twice, both agg topics substituted, `'spark' AS engine` and `'flink' AS engine` present, and all statements use `IF NOT EXISTS`.
+  - Integration `test_clickhouse_keeps_engines_apart`: produce the same aggregate record to both test agg topics. `SELECT engine, count() … FINAL GROUP BY engine` gives one row per engine.
   - Integration `test_clickhouse_ingests_raw_topic`, in a test database with test topics: produce 10 records, and within 60 s `SELECT count() FROM db.recentchange FINAL` returns 10.
   - Integration `test_duplicate_messages_collapse`: produce the same 5 records twice. `count() … FINAL` returns 5.
 - [ ] **Step 2: Run.** Expect FAIL. **Step 3: Implement.** **Step 4: Run.** Expect PASS.
@@ -275,7 +328,7 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 
 ---
 
-### Task 7: Flink in the engine × format matrix
+### Task 8: Flink in the engine × format matrix
 
 **Files:**
 - Modify: `src/de_playground/matrix/probes.py` (`FlinkAdapter`, `ENGINES` adds `"flink"`), `tests/integration/test_matrix_smoke.py`
@@ -300,22 +353,24 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 
 ---
 
-### Task 8: Documentation and diagrams
+### Task 9: Documentation and diagrams
 
 **Files:**
-- Modify: `README.md` (streaming quick start, reference sample, lessons), `docs/architecture.md` (a streaming stages diagram in the same style as the batch stages diagram: source → producer → Kafka → Flink → bronze/gold in Iceberg and Delta, plus Kafka → ClickHouse; the component diagram gains the streaming profile), `docker/flink/README.md`, `docker/kafka/README.md`
+- Modify: `README.md` (streaming quick start, reference sample, lessons), `docs/architecture.md` (a streaming stages diagram in the same style as the batch stages diagram: source → producer → Kafka → two lanes, Flink and Spark, each → bronze/gold in Iceberg and Delta and its own agg topic, plus Kafka → ClickHouse; the component diagram gains the streaming profiles), `docker/flink/README.md`, `docker/kafka/README.md`
 - Test: Mermaid parse check (render each block with the Mermaid parser, as in the phase 1–2 docs work)
 
-- [ ] **Step 1:** Write the docs. The README quick start is `make up-stream` → `make stream-setup` → `make stream-job`, then where to look:
+- [ ] **Step 1:** Write the docs. The README quick start is `make up-stream` → `make stream-setup` → `make stream-job` (Flink) and/or `make stream-spark` (Spark), then where to look:
   - Kafka UI on `:8080`;
-  - Flink UI on `:8081`;
-  - ClickHouse `SELECT … FROM wikimedia.edits_per_minute FINAL`;
-  - Lakekeeper `streaming_gold`.
+  - Flink UI on `:8081`, Spark UI on `:4040` (Structured Streaming tab);
+  - ClickHouse `SELECT engine, wiki, sum(edits) FROM wikimedia.edits_per_minute FINAL GROUP BY ALL`;
+  - Lakekeeper `flink_stream_gold` and `spark_stream_gold`.
+
+  Also document the main Flink-vs-Spark differences the build surfaced: per-partition vs global watermarks, checkpoints vs micro-batch commits, job submission vs a long-lived client session.
 - [ ] **Step 2:** Validate that every Mermaid block parses and render the new stages diagram to check the layout. Expect all blocks to parse.
 - [ ] **Step 3:** Run the full verification from nothing:
 
   ```
-  make nuke && make up-stream && make bootstrap && make stream-setup && make stream-job
+  make nuke && make up-stream && make bootstrap && make stream-setup && make stream-job && make stream-spark
   ```
 
   Then run `make test && make test-integration`. Expect everything green. The batch integration tests need `make up-batch` and gold present, so run `make up-batch && make batch` first. Profiles can run together, at about 26 GB peak; if memory is tight, run streaming and batch suites separately and record that in the README.
@@ -328,4 +383,4 @@ tests/unit/test_streaming_*.py, tests/integration/test_streaming_*.py
 - Orchestrators (phase 4). They will submit and check `stream-job` and run table maintenance (Iceberg snapshot expiry, Delta optimize/vacuum).
 - Debezium/CDC (phase 5).
 - Top-edited-pages aggregation (the spec's "e.g." list). Per-minute counts by wiki cover the windowing lessons. Add it later if wanted.
-- Spark Structured Streaming.
+- Spark Structured Streaming into Kafka-based CDC or `foreachBatch` MERGE patterns. Phase 5 (Debezium) is the natural place for upserting streams.

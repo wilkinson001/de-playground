@@ -73,6 +73,10 @@ doing.
 - Batch pipeline is **incremental, month by month**, with merge/upsert into
   silver and gold.
 - Flink writes **both Iceberg and Delta** in the streaming track.
+- **Spark Structured Streaming** runs the same streaming operations as Flink
+  (read the raw topic; bronze to Iceberg + Delta; per-minute aggregates to
+  Iceberg + Delta + Kafka), so the two streaming engines can be compared like
+  the batch engines are.
 - Public datasets; public streaming APIs acceptable.
 - Table formats: **DuckLake, Iceberg and Delta** all included, specifically to
   learn writing to and interacting with each.
