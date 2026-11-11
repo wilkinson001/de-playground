@@ -69,8 +69,9 @@ flowchart LR
     ch -- "reads Iceberg + Delta files" --> s3
 ```
 
-More in [`docs/architecture.md`](docs/architecture.md): where each table format keeps its
-metadata, and the month-by-month bronze → silver → gold flow.
+More in [`docs/architecture.md`](docs/architecture.md): a stage-by-layer view of what processes
+the data at each step (ingest → bronze → silver → gold → serve, per engine and format), where each
+table format keeps its metadata, and the month-by-month flow.
 
 ## First run
 
