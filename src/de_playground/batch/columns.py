@@ -36,8 +36,10 @@ _COLUMNS: list[tuple[str, str, str]] = [
 BRONZE_COLUMNS: list[tuple[str, str]] = [(name, typ) for name, typ, _ in _COLUMNS]
 
 _SQL_TYPES: dict[Dialect, dict[str, str]] = {
-    "duckdb": {"int": "INTEGER", "bigint": "BIGINT", "double": "DOUBLE", "timestamp": "TIMESTAMP", "string": "VARCHAR"},
-    "spark": {"int": "INT", "bigint": "BIGINT", "double": "DOUBLE", "timestamp": "TIMESTAMP", "string": "STRING"},
+    "duckdb": {"int": "INTEGER", "bigint": "BIGINT", "double": "DOUBLE", "timestamp": "TIMESTAMP", "string": "VARCHAR",
+               "date": "DATE"},
+    "spark": {"int": "INT", "bigint": "BIGINT", "double": "DOUBLE", "timestamp": "TIMESTAMP", "string": "STRING",
+              "date": "DATE"},
 }
 _QUOTE: dict[Dialect, str] = {"duckdb": '"', "spark": "`"}
 
